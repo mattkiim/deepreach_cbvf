@@ -20,7 +20,7 @@ p.add_argument('--mode', type=str, required=True, choices=['all', 'train', 'test
 # save/load directory options
 p.add_argument('--experiments_dir', type=str, default='./runs', help='Where to save the experiment subdirectory.')
 p.add_argument('--experiment_name', type=str, required=True, help='Name of the experient subdirectory.')
-p.add_argument('--use_wandb', default=False, action='store_true', help='use wandb for logging')
+p.add_argument('--use_wandb', default=True, action='store_true', help='use wandb for logging')
 
 use_wandb = p.parse_known_args()[0].use_wandb
 if use_wandb:
@@ -28,6 +28,8 @@ if use_wandb:
     p.add_argument('--wandb_entity', type=str, required=True, help='wandb entity')
     p.add_argument('--wandb_group', type=str, required=True, help='wandb group')
     p.add_argument('--wandb_name', type=str, required=True, help='name of wandb run')
+else:
+    print("not using wandb")
 
 mode = p.parse_known_args()[0].mode
 
@@ -91,6 +93,8 @@ if (mode == 'all') or (mode == 'train'):
 
     # loss options
     p.add_argument('--minWith', type=str, required=True, choices=['none', 'zero', 'target'], help='BRS vs BRT computation (typically should be using target for BRT)')
+    p.add_argument('--gamma', type=float, required=False, default=1.0, help='CBVF gamma term')
+
 
     # load dynamics_class choices dynamically from dynamics module
     dynamics_classes_dict = {name: clss for name, clss in inspect.getmembers(dynamics, inspect.isclass) if clss.__bases__[0] == dynamics.Dynamics}
@@ -183,9 +187,9 @@ experiment.init_special(**{argname: getattr(orig_opt, argname) for argname in in
 
 if (mode == 'all') or (mode == 'train'):
     if dynamics.loss_type == 'brt_hjivi':
-        loss_fn = losses.init_brt_hjivi_loss(dynamics, orig_opt.minWith, orig_opt.dirichlet_loss_divisor)
+        loss_fn = losses.init_brt_hjivi_loss(dynamics, orig_opt.minWith, orig_opt.gamma, orig_opt.dirichlet_loss_divisor)
     elif dynamics.loss_type == 'brat_hjivi':
-        loss_fn = losses.init_brat_hjivi_loss(dynamics, orig_opt.minWith, orig_opt.dirichlet_loss_divisor)
+        loss_fn = losses.init_brat_hjivi_loss(dynamics, orig_opt.minWith, orig_opt.gamma, orig_opt.dirichlet_loss_divisor)
     else:
         raise NotImplementedError
     experiment.train(

@@ -1,7 +1,7 @@
 import torch
 
 # uses real units
-def init_brt_hjivi_loss(dynamics, minWith, dirichlet_loss_divisor, gamma=0.1):
+def init_brt_hjivi_loss(dynamics, minWith, gamma, dirichlet_loss_divisor):
     def brt_hjivi_loss(state, value, dvdt, dvds, boundary_value, dirichlet_mask, output):
         if torch.all(dirichlet_mask):
             # pretraining loss
@@ -29,7 +29,7 @@ def init_brt_hjivi_loss(dynamics, minWith, dirichlet_loss_divisor, gamma=0.1):
     return brt_hjivi_loss
 
 
-def init_brat_hjivi_loss(dynamics, minWith, dirichlet_loss_divisor, gamma=0.1):
+def init_brat_hjivi_loss(dynamics, minWith, gamma, dirichlet_loss_divisor):
     def brat_hjivi_loss(state, value, dvdt, dvds, boundary_value, reach_value, avoid_value, dirichlet_mask, output):
         if torch.all(dirichlet_mask):
             # pretraining loss
@@ -55,8 +55,8 @@ def init_brat_hjivi_loss(dynamics, minWith, dirichlet_loss_divisor, gamma=0.1):
     return brat_hjivi_loss
 
 #TODO: new
-def init_cvbf_vi_loss(dynamics, minWith='zero', dirichlet_loss_divisor=1.0, gamma=0.1):
-    def cvbf_vi_loss(state, value, dvdt, dvds, boundary_value, reach_value, avoid_value, dirichlet_mask, output):
+def init_cbvf_vi_loss(dynamics, minWith='zero', dirichlet_loss_divisor=1.0, gamma=0.1):
+    def cbvf_vi_loss(state, value, dvdt, dvds, boundary_value, reach_value, avoid_value, dirichlet_mask, output):
         if torch.all(dirichlet_mask):
             # pretraining loss
             diff_constraint_hom = torch.Tensor([0])
@@ -65,7 +65,7 @@ def init_cvbf_vi_loss(dynamics, minWith='zero', dirichlet_loss_divisor=1.0, gamm
             if minWith == 'zero':
                 ham = torch.clamp(ham, max=0.0)
 
-            # Differential constraint for CVBF
+            # Differential constraint for CBVF
             diff_constraint_hom = dvdt - ham + gamma * value
 
             if minWith == 'target':
@@ -82,4 +82,4 @@ def init_cvbf_vi_loss(dynamics, minWith='zero', dirichlet_loss_divisor=1.0, gamm
         return {'dirichlet': torch.abs(dirichlet).sum() / dirichlet_loss_divisor,
                 'diff_constraint_hom': torch.abs(diff_constraint_hom).sum()}
 
-    return cvbf_vi_loss
+    return cbvf_vi_loss
