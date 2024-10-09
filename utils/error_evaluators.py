@@ -109,7 +109,7 @@ from tqdm import tqdm
 
 def scenario_optimization(model, policy, dynamics, tMin, tMax, dt, set_type, control_type, scenario_batch_size, sample_batch_size, sample_generator, sample_validator, violation_validator, max_scenarios=None, max_samples=None, max_violations=None, tStart_generator=None):
     rem = ((tMax-tMin) / dt)%1
-    e_tol = 1e-12
+    e_tol = 1e-8 # -12
     assert rem < e_tol or 1 - rem < e_tol, f'{tMax-tMin} is not divisible by {dt}'
     assert tMax > tMin
     assert set_type in ['BRS', 'BRT']

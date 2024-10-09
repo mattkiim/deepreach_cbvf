@@ -17,14 +17,6 @@ class ReachabilityDataset(Dataset):
         self.num_src_samples = num_src_samples
         self.num_target_samples = num_target_samples
 
-        # TODO: below is wrong 9/27/24
-        self.n_grid_pts = 300  # Example value for the number of grid points
-        self.X1g = torch.linspace(-1, 1, int(self.n_grid_pts ** 0.5))  # Example grid along X1 axis
-        self.X2g = torch.linspace(-1, 1, int(self.n_grid_pts ** 0.5))  # Example grid along X2 axis
-        self.values_DP_grid = torch.zeros(self.n_grid_pts)  # Dummy initialization for DP grid values
-        self.values_DP_linear_grid = torch.zeros(self.n_grid_pts)  # Dummy initialization for DP linear grid values
-
-
         # optimal trajectory data
         self.optimal_trajectory = None
 

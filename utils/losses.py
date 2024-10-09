@@ -11,7 +11,7 @@ def init_brt_hjivi_loss(dynamics, minWith, gamma, dirichlet_loss_divisor):
             if minWith == 'zero':
                 ham = torch.clamp(ham, max=0.0)
 
-            diff_constraint_hom = dvdt - ham + gamma * value
+            diff_constraint_hom = dvdt - ham - gamma * value
             if minWith == 'target':
                 diff_constraint_hom = torch.max(
                     diff_constraint_hom, value - boundary_value)
@@ -39,7 +39,7 @@ def init_brat_hjivi_loss(dynamics, minWith, gamma, dirichlet_loss_divisor):
             if minWith == 'zero':
                 ham = torch.clamp(ham, max=0.0)
 
-            diff_constraint_hom = dvdt - ham + gamma * value
+            diff_constraint_hom = dvdt - ham - gamma * value
             if minWith == 'target':
                 diff_constraint_hom = torch.min(
                     torch.max(diff_constraint_hom, value - reach_value), value + avoid_value)
@@ -53,33 +53,3 @@ def init_brat_hjivi_loss(dynamics, minWith, gamma, dirichlet_loss_divisor):
         return {'dirichlet': torch.abs(dirichlet).sum() / dirichlet_loss_divisor,
                 'diff_constraint_hom': torch.abs(diff_constraint_hom).sum()}
     return brat_hjivi_loss
-
-#TODO: new
-def init_cbvf_vi_loss(dynamics, minWith='zero', dirichlet_loss_divisor=1.0, gamma=0.1):
-    def cbvf_vi_loss(state, value, dvdt, dvds, boundary_value, reach_value, avoid_value, dirichlet_mask, output):
-        if torch.all(dirichlet_mask):
-            # pretraining loss
-            diff_constraint_hom = torch.Tensor([0])
-        else:
-            ham = dynamics.hamiltonian(state, dvds)
-            if minWith == 'zero':
-                ham = torch.clamp(ham, max=0.0)
-
-            # Differential constraint for CBVF
-            diff_constraint_hom = dvdt - ham + gamma * value
-
-            if minWith == 'target':
-                diff_constraint_hom = torch.min(
-                    torch.max(diff_constraint_hom, value - reach_value), value + avoid_value)
-
-        dirichlet = value[dirichlet_mask] - boundary_value[dirichlet_mask]
-        if dynamics.deepreach_model == 'exact':
-            if torch.all(dirichlet_mask):
-                dirichlet = output.squeeze(dim=-1)[dirichlet_mask] - 0.0
-            else:
-                return {'diff_constraint_hom': torch.abs(diff_constraint_hom).sum()}
-        
-        return {'dirichlet': torch.abs(dirichlet).sum() / dirichlet_loss_divisor,
-                'diff_constraint_hom': torch.abs(diff_constraint_hom).sum()}
-
-    return cbvf_vi_loss

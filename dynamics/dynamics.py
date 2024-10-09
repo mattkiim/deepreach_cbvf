@@ -301,7 +301,7 @@ class Dubins3D(Dynamics):
     # \dot x    = v \cos \theta
     # \dot y    = v \sin \theta
     # \dot \theta = u
-    def dsdt(self, state, control, disturbance):
+    def dsdt(self, state, control): # , disturbance
         if self.freeze_model:
             raise NotImplementedError
         dsdt = torch.zeros_like(state)
@@ -328,7 +328,6 @@ class Dubins3D(Dynamics):
             return self.velocity*(torch.cos(state[..., 2]) * dvds[..., 0] + torch.sin(state[..., 2]) * dvds[..., 1]) + self.omega_max * torch.abs(dvds[..., 2])
 
     def optimal_control(self, state, dvds):
-        # TODO: need to keep track of this and plot it on top of the value function
         if self.set_mode == 'reach':
             return (-self.omega_max*torch.sign(dvds[..., 2]))[..., None]
         elif self.set_mode == 'avoid':

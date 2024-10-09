@@ -42,50 +42,47 @@ class Experiment(ABC):
             model_path = os.path.join(self.experiment_dir, 'training', 'checkpoints', 'model_epoch_%04d.pth' % epoch)
             self.model.load_state_dict(torch.load(model_path)['model'])
 
-    def compute_optimal_trajectory(self, time_step, xys, z, plot_config):
-        # Initialize list to store trajectories for all grid points in xys
-        all_trajectories = []
+    
+    def trajectory_rollout(self, policy, dynamics, tMin, tMax, dt, scenario_batch_size, initial_states, tStart_generator=None):
+        state_trajs = torch.zeros(scenario_batch_size, int((tMax-tMin)/dt) + 1, dynamics.state_dim)
+        ctrl_trajs = torch.zeros(scenario_batch_size, int((tMax-tMin)/dt), dynamics.control_dim)
 
-        # Loop over each state in xys (each grid point)
-        for idx in range(xys.shape[0]):
-            # Initialize trajectory for the current grid point
-            trajectory = []
+        state_trajs[:, 0, :] = initial_states
+
+        # rollout
+        for k in tqdm(range(int((tMax-tMin)/dt)), desc='Trajectory Propagation'):
+            traj_time = tMax - k * dt
+            traj_times = torch.full((scenario_batch_size, ), traj_time)
+
+            # get the states at t=k
+            traj_coords = torch.cat((traj_times.unsqueeze(-1), state_trajs[:, k]), dim=-1)
+
+            traj_policy_results = policy({'coords': dynamics.coord_to_input(traj_coords.cuda())}) # learned costate/gradient
+            traj_dvs = dynamics.io_to_dv(traj_policy_results['model_in'], traj_policy_results['model_out'].squeeze(dim=-1)).detach()
+
+            # optimal control based on the policy's output
+            ctrl_trajs[:, k] = dynamics.optimal_control(traj_coords[:, 1:].cuda(), traj_dvs[..., 1:].cuda())
+
+            state_trajs[:, k+1] = dynamics.equivalent_wrapped_state(
+                state_trajs[:, k].cuda() + dt * dynamics.dsdt(state_trajs[:, k].cuda(), ctrl_trajs[:, k].cuda()).cuda()
+            ).cpu()
+
+        return state_trajs, ctrl_trajs
+
+
+    def initialize_states_with_general_displacement(self, state_dim, theta, displacement):
+        initial_states = torch.zeros(state_dim)
             
-            # Create the initial state for the current grid point
-            current_state = torch.zeros(1, self.dataset.dynamics.state_dim)
-            current_state[:, plot_config['x_axis_idx']] = xys[idx, 0]  # Assign x-coordinate
-            current_state[:, plot_config['y_axis_idx']] = xys[idx, 1]  # Assign y-coordinate
-            current_state[:, plot_config['z_axis_idx']] = z  # Assign z (angle or other state dimension)
-            
-            # Enable gradient tracking for the current state
-            current_state.requires_grad_(True)
-            
-            # Simulate a single time step
-            with torch.no_grad():
-                # Get value function for the current state from the model
-                coords = torch.cat((time_step, current_state), dim=-1)  # Combine time and state into input
-                model_results = self.model({'coords': self.dataset.dynamics.coord_to_input(coords.cuda())})
-                value = self.dataset.dynamics.io_to_value(model_results['model_in'], model_results['model_out'].squeeze(dim=-1))
+        x_start = -displacement * torch.cos(theta)  # x-coordinate displaced opposite to the orientation
+        y_start = -displacement * torch.sin(theta)  # y-coordinate displaced opposite to the orientation
 
-            # Compute the gradient of the value with respect to the state
-            dvds = torch.autograd.grad(value, current_state, grad_outputs=torch.ones_like(value), retain_graph=True)[0]
+        initial_states[0] = x_start  # x position
+        initial_states[1] = y_start  # y position
 
-            # Compute optimal control using the gradient (dvds)
-            optimal_control = self.dataset.dynamics.optimal_control(current_state, dvds)
+        initial_states[2] = theta  # orientation angle
 
-            # Update state using dynamics (single time step)
-            dsdt = self.dataset.dynamics.dsdt(current_state, optimal_control, disturbance=torch.zeros_like(optimal_control))
-            current_state = current_state.detach() + dsdt
-
-            # Store current state in trajectory
-            trajectory.append(current_state.clone().cpu().numpy())
-
-            # Convert trajectory list to a NumPy array and store in all_trajectories
-            all_trajectories.append(np.array(trajectory))
-
-        # Return all computed trajectories for the grid points in xys
-        return np.array(all_trajectories)
-
+        return initial_states
+        
 
     def validate(self, epoch, save_path, x_resolution, y_resolution, z_resolution, time_resolution):
         was_training = self.model.training
@@ -129,7 +126,7 @@ class Experiment(ABC):
                 # fig.colorbar(s) 
 
                 # TODO: plot optimal trajectories
-                optimal_traj = self.compute_optimal_trajectory(times[i], xys, zs[j], plot_config)
+                optimal_traj = self.compute_optimal_trajectory(times[i], xys, zs[j], plot_config, coords, values)
                 ax.plot(optimal_traj[:, 0], optimal_traj[:, 1], color='green', linestyle='-', marker='o')
 
 
@@ -265,6 +262,155 @@ class Experiment(ABC):
             self.model.train()
             self.model.requires_grad_(True)
 
+    def validate2(self, epoch, epochs, save_path, x_resolution, y_resolution, z_resolution, time_resolution):
+        was_training = self.model.training
+        self.model.eval()
+        self.model.requires_grad_(False)
+
+        plot_config = self.dataset.dynamics.plot_config()
+
+        state_test_range = self.dataset.dynamics.state_test_range()
+        x_min, x_max = state_test_range[plot_config['x_axis_idx']]
+        y_min, y_max = state_test_range[plot_config['y_axis_idx']]
+        z_min, z_max = state_test_range[plot_config['z_axis_idx']]
+
+        times = torch.linspace(0, self.dataset.tMax, time_resolution)
+        xs = torch.linspace(x_min, x_max, x_resolution)
+        ys = torch.linspace(y_min, y_max, y_resolution)
+        zs = torch.linspace(z_min, z_max, z_resolution)
+        xys = torch.cartesian_prod(xs, ys)
+
+        # Generate separate file names for 3D and 2D plots based on the provided save_path
+        save_path_3d = os.path.splitext(save_path)[0] + '_3d.png'  # Add '_3d' before the file extension
+        save_path_2d = os.path.splitext(save_path)[0] + '_2d.png'  # Add '_2d' before the file extension
+
+        # Create '2d' and '3d' directories under the save_path if they don't exist
+        dir_2d = os.path.join(os.path.dirname(save_path), '2d')
+        dir_3d = os.path.join(os.path.dirname(save_path), '3d')
+        os.makedirs(dir_2d, exist_ok=True)  # Create the '2d' folder
+        os.makedirs(dir_3d, exist_ok=True)  # Create the '3d' folder
+
+        # Create two separate figures: one for 3D plots and one for 2D heatmaps
+        fig_3d = plt.figure(figsize=(5*len(times), 5*len(zs)))  # Adjust the figure to have extra column for min plot
+        fig_2d = plt.figure(figsize=(5*len(times), 5*len(zs))) # Adjust the figure to have extra column for min plot
+
+        # Array to store minimum values for each x, y pair across all z slices
+        min_values = np.full((x_resolution, y_resolution), np.inf)
+        
+
+        for i in range(len(times)):
+            for j in range(len(zs)):
+                coords = torch.zeros(x_resolution*y_resolution, self.dataset.dynamics.state_dim + 1)
+                coords[:, 0] = times[i]
+                coords[:, 1:] = torch.tensor(plot_config['state_slices'])
+                coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
+                coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
+                coords[:, 1 + plot_config['z_axis_idx']] = zs[j]
+
+                with torch.no_grad():
+                    model_results = self.model({'coords': self.dataset.dynamics.coord_to_input(coords.cuda())})
+                    values = self.dataset.dynamics.io_to_value(
+                        model_results['model_in'].detach(), 
+                        model_results['model_out'].squeeze(dim=-1).detach()
+                    )
+
+                # Reshape 'values' to 2D for both 2D and 3D plotting
+                values_reshaped = values.detach().cpu().numpy().reshape(x_resolution, y_resolution)
+
+                # Update min_values to track the minimum value across all z-slices for each x, y pair
+                min_values = np.minimum(min_values, values_reshaped)
+
+                # 3D Plot
+                ax_3d = fig_3d.add_subplot(len(times), len(zs), (j+1) + i*(len(zs)), projection='3d')  # Create a 3D subplot
+                X, Y = np.meshgrid(xs, ys)  # Generate grid for x and y
+                ax_3d.plot_surface(X, Y, values_reshaped.T, cmap='viridis', edgecolor='none')  # Plot the 3D surface
+                ax_3d.set_title(f'3D: t = {times[i]:.2f}, {plot_config["state_labels"][plot_config["z_axis_idx"]]} = {zs[j]:.2f}')
+                ax_3d.set_title('t = %0.2f, %s = %0.2f' % (times[i], plot_config['state_labels'][plot_config['z_axis_idx']], zs[j]))
+                ax_3d.set_xlabel('X-axis')
+                ax_3d.set_ylabel('Y-axis')
+                ax_3d.set_zlabel('Values')
+
+                ax_3d.set_xlim([-1.5, 1.5])
+                ax_3d.set_ylim([-1.5, 1.5])
+                ax_3d.set_zlim([-1.5, 1.5])
+
+                ax_3d.view_init(elev=20, azim=120)
+
+
+                # 2D Heatmap Plot
+                ax_2d = fig_2d.add_subplot(len(times), len(zs), (j+1) + i*(len(zs)))  # Create a 2D subplot
+                s = ax_2d.imshow(1*(values_reshaped.T <= 0), cmap='bwr', origin='lower', extent=(-1., 1., -1., 1.))  # Plot the 2D heatmap
+                ax_2d.set_title('t = %0.2f, %s = %0.2f' % (times[i], plot_config['state_labels'][plot_config['z_axis_idx']], zs[j]))
+                fig_2d.colorbar(s, ax=ax_2d)  # Add colorbar for the 2D plot
+
+
+                scenario_batch_size = 1
+                initial_states = self.initialize_states_with_general_displacement(
+                    state_dim=self.dataset.dynamics.state_dim, 
+                    theta=zs[j],  # Use the zs tensor for orientations
+                    displacement=0.75  # Displace by 0.5
+                )
+
+
+                if epoch == epochs: # and j == 2
+                    state_trajs, ctrl_trajs = self.trajectory_rollout(
+                        policy=self.model, 
+                        dynamics=self.dataset.dynamics,
+                        tMin=self.dataset.tMin,
+                        tMax=times[i],
+                        dt=max(times) / epochs * 10,
+                        scenario_batch_size=scenario_batch_size, # not sure what I should set this to... 
+                        initial_states=initial_states
+                    )
+
+                    # plot rolled-out trajectories on the 2D plot
+                    for k in range(state_trajs.shape[0]):
+                        x_traj = state_trajs[k, :, plot_config['x_axis_idx']].cpu().numpy() 
+                        y_traj = state_trajs[k, :, plot_config['y_axis_idx']].cpu().numpy() 
+                        ax_2d.plot(x_traj, y_traj, color='white', lw=1.0, label=f'Trajectory {k + 1}')
+                        ax_2d.scatter(x_traj[0], y_traj[0], color='green', s=100, zorder=5, label=f'Start {k+1}' if k == 0 else "")
+                        ax_2d.scatter(x_traj[-1], y_traj[-1], color='red', s=100, zorder=5, label=f'End {k+1}' if k == 0 else "")
+
+                        
+            # # After processing all z-slices for the current time step, add the minimum z-values plot
+            # # Add minimum z-values as the last column for the 3D figure
+            # ax_min_3d = fig_3d.add_subplot(len(times), len(zs) + 1, (len(zs)+1) + i*(len(zs)+1), projection='3d')
+            # ax_min_3d.plot_surface(X, Y, min_values.T, cmap='plasma', edgecolor='none')
+            # ax_min_3d.set_title(f'3D: t = {times[i]:.2f}, {plot_config["state_labels"][plot_config["z_axis_idx"]]} = min')  # \u03B8 is the Unicode for theta (θ)
+            # ax_min_3d.set_xlabel('X-axis')
+            # ax_min_3d.set_ylabel('Y-axis')
+            # ax_min_3d.set_zlabel('Min Values')
+
+            # # Add minimum z-values as the last column for the 2D figure
+            # ax_min_2d = fig_2d.add_subplot(len(times), len(zs) + 1, (len(zs)+1) + i*(len(zs)+1))
+            # s_min = ax_min_2d.imshow(min_values.T, cmap='plasma', origin='lower', extent=(-1., 1., -1., 1.))
+            # ax_min_2d.set_title(f'2D: t = {times[i]:.2f}, {plot_config["state_labels"][plot_config["z_axis_idx"]]} = min')  # \u03B8 is the Unicode for theta (θ)
+            # fig_2d.colorbar(s_min, ax=ax_min_2d)
+
+        # Adjust the spacing between subplots (wspace for width, hspace for height)
+        fig_3d.subplots_adjust(wspace=0.5, hspace=0.5)  # Adjust the spacing for 3D plots
+        fig_2d.subplots_adjust(wspace=0.5, hspace=0.5)  # Adjust the spacing for 2D plots
+
+        # Save the figures to their respective folders
+        fig_3d.savefig(os.path.join(dir_3d, os.path.basename(save_path_3d)))  # Save the 3D plot figure
+        fig_2d.savefig(os.path.join(dir_2d, os.path.basename(save_path_2d)))  # Save the 2D heatmap figure
+
+        # Optionally log the figures using wandb if enabled
+        if self.use_wandb:
+            wandb.log({
+                'step': epoch,
+                '3D_val_plot': wandb.Image(fig_3d),
+                '2D_val_plot': wandb.Image(fig_2d),
+            })
+
+        # Close the figures
+        plt.close(fig_3d)
+        plt.close(fig_2d)
+
+        if was_training:
+            self.model.train()
+            self.model.requires_grad_(True)
+
     def train(
             self, batch_size, epochs, lr, 
             steps_til_summary, epochs_til_checkpoint, 
@@ -369,27 +515,6 @@ class Experiment(ABC):
                                 grads_dirichlet.append(param.grad.view(-1))
                             grads_dirichlet = torch.cat(grads_dirichlet)
 
-                            # # Plot the gradients
-                            # import seaborn as sns
-                            # import matplotlib.pyplot as plt
-                            # fig = plt.figure(figsize=(5, 5))
-                            # ax = fig.add_subplot(1, 1, 1)
-                            # ax.set_yscale('symlog')
-                            # sns.distplot(grads_PDE.cpu().numpy(), hist=False, kde_kws={"shade": False}, norm_hist=True)
-                            # sns.distplot(grads_dirichlet.cpu().numpy(), hist=False, kde_kws={"shade": False}, norm_hist=True)
-                            # fig.savefig('gradient_visualization.png')
-
-                            # fig = plt.figure(figsize=(5, 5))
-                            # ax = fig.add_subplot(1, 1, 1)
-                            # ax.set_yscale('symlog')
-                            # grads_dirichlet_normalized = grads_dirichlet * torch.mean(torch.abs(grads_PDE))/torch.mean(torch.abs(grads_dirichlet))
-                            # sns.distplot(grads_PDE.cpu().numpy(), hist=False, kde_kws={"shade": False}, norm_hist=True)
-                            # sns.distplot(grads_dirichlet_normalized.cpu().numpy(), hist=False, kde_kws={"shade": False}, norm_hist=True)
-                            # ax.set_xlim([-1000.0, 1000.0])
-                            # fig.savefig('gradient_visualization_normalized.png')
-
-                            # Set the new weight according to the paper
-                            # num = torch.max(torch.abs(grads_PDE))
                             num = torch.mean(torch.abs(grads_PDE))
                             den = torch.mean(torch.abs(grads_dirichlet))
                             new_weight = 0.9*new_weight + 0.1*num/den
@@ -454,9 +579,12 @@ class Experiment(ABC):
                     np.savetxt(os.path.join(checkpoints_dir, 'train_losses_epoch_%04d.txt' % (epoch+1)),
                         np.array(train_losses))
 
-                    self.validate(
-                        epoch=epoch+1, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_epoch_%04d.png' % (epoch+1)),
-                        x_resolution = val_x_resolution, y_resolution = val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
+                    # self.validate(
+                    #     epoch=epoch+1, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_epoch_%04d.png' % (epoch+1)),
+                    #     x_resolution = val_x_resolution, y_resolution = val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
+                    self.validate2(
+                        epoch=epoch+1, epochs=epochs, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_epoch_%04d.png' % (epoch+1)), x_resolution = val_x_resolution, y_resolution = val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
+
 
         if was_eval:
             self.model.eval()
