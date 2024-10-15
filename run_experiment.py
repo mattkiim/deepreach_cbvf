@@ -90,6 +90,8 @@ if (mode == 'all') or (mode == 'train'):
     p.add_argument('--val_y_resolution', type=int, default=200, help='y-axis resolution of validation plot during training')
     p.add_argument('--val_z_resolution', type=int, default=5, help='z-axis resolution of validation plot during training')
     p.add_argument('--val_time_resolution', type=int, default=3, help='time-axis resolution of validation plot during training')
+    p.add_argument('--rollout', type=bool, default=False, help='rollout, si o no?')
+
 
     # loss options
     p.add_argument('--minWith', type=str, required=True, choices=['none', 'zero', 'target'], help='BRS vs BRT computation (typically should be using target for BRT)')
@@ -182,7 +184,7 @@ model = modules.SingleBVPNet(in_features=dynamics.input_dim, out_features=1, typ
 model.cuda()
 
 experiment_class = getattr(experiments, orig_opt.experiment_class)
-experiment = experiment_class(model=model, dataset=dataset, experiment_dir=experiment_dir, use_wandb=use_wandb)
+experiment = experiment_class(model=model, dataset=dataset, experiment_dir=experiment_dir, use_wandb=use_wandb, rollout=orig_opt.rollout)
 experiment.init_special(**{argname: getattr(orig_opt, argname) for argname in inspect.signature(experiment_class.init_special).parameters.keys() if argname != 'self'})
 
 if (mode == 'all') or (mode == 'train'):
@@ -196,8 +198,7 @@ if (mode == 'all') or (mode == 'train'):
         batch_size=orig_opt.batch_size, epochs=orig_opt.num_epochs, lr=orig_opt.lr, 
         steps_til_summary=orig_opt.steps_til_summary, epochs_til_checkpoint=orig_opt.epochs_til_ckpt, 
         loss_fn=loss_fn, clip_grad=orig_opt.clip_grad, use_lbfgs=orig_opt.use_lbfgs, adjust_relative_grads=orig_opt.adj_rel_grads,
-        val_x_resolution=orig_opt.val_x_resolution, val_y_resolution=orig_opt.val_y_resolution, val_z_resolution=orig_opt.val_z_resolution, val_time_resolution=orig_opt.val_time_resolution,
-        use_CSL=orig_opt.use_CSL, CSL_lr=orig_opt.CSL_lr, CSL_dt=orig_opt.CSL_dt, epochs_til_CSL=orig_opt.epochs_til_CSL, num_CSL_samples=orig_opt.num_CSL_samples, CSL_loss_frac_cutoff=orig_opt.CSL_loss_frac_cutoff, max_CSL_epochs=orig_opt.max_CSL_epochs, CSL_loss_weight=orig_opt.CSL_loss_weight, CSL_batch_size=orig_opt.CSL_batch_size)
+        val_x_resolution=orig_opt.val_x_resolution, val_y_resolution=orig_opt.val_y_resolution, val_z_resolution=orig_opt.val_z_resolution, val_time_resolution=orig_opt.val_time_resolution)
 
 if (mode == 'all') or (mode == 'test'):
     experiment.test(

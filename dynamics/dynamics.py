@@ -276,7 +276,9 @@ class Dubins3D(Dynamics):
         self.freeze_model = freeze_model
         super().__init__(
             loss_type='brt_hjivi', set_mode=set_mode,
-            state_dim=3, input_dim=4, control_dim=1, disturbance_dim=0,
+            state_dim=3, input_dim=4, control_dim=1, disturbance_dim=0, 
+            # input dimension is currently sum of states + parameters + time (1)
+            # TODO: increase input dimension by 1 by parameterizing gamma
             state_mean=[0, 0, 0], 
             state_var=[1, 1, self.angle_alpha_factor*math.pi],
             value_mean=0.25, 
@@ -319,6 +321,8 @@ class Dubins3D(Dynamics):
     def cost_fn(self, state_traj):
         return torch.min(self.boundary_fn(state_traj), dim=-1).values
     
+    # take the state (+1 from before)
+    # index the position in the state where gamma is (put it last)
     def hamiltonian(self, state, dvds):
         if self.freeze_model:
             raise NotImplementedError
@@ -326,6 +330,90 @@ class Dubins3D(Dynamics):
             return self.velocity*(torch.cos(state[..., 2]) * dvds[..., 0] + torch.sin(state[..., 2]) * dvds[..., 1]) - self.omega_max * torch.abs(dvds[..., 2]) 
         elif self.set_mode == 'avoid':
             return self.velocity*(torch.cos(state[..., 2]) * dvds[..., 0] + torch.sin(state[..., 2]) * dvds[..., 1]) + self.omega_max * torch.abs(dvds[..., 2])
+
+    def optimal_control(self, state, dvds):
+        if self.set_mode == 'reach':
+            return (-self.omega_max*torch.sign(dvds[..., 2]))[..., None]
+        elif self.set_mode == 'avoid':
+            return (self.omega_max*torch.sign(dvds[..., 2]))[..., None]
+
+    def optimal_disturbance(self, state, dvds):
+        return 0
+    
+    def plot_config(self):
+        return {
+            'state_slices': [0, 0, 0],
+            'state_labels': ['x', 'y', r'$\theta$'],
+            'x_axis_idx': 0,
+            'y_axis_idx': 1,
+            'z_axis_idx': 2,
+        }
+
+class Dubins3D_P(Dynamics):
+    def __init__(self, goalR:float, velocity:float, omega_max:float, angle_alpha_factor:float, set_mode:str, freeze_model: bool):
+        self.goalR = goalR
+        self.velocity = velocity
+        self.omega_max = omega_max
+        self.angle_alpha_factor = angle_alpha_factor
+        self.freeze_model = freeze_model
+        super().__init__(
+            loss_type='brt_hjivi', set_mode=set_mode,
+            state_dim=4, input_dim=5, control_dim=1, disturbance_dim=0, 
+            # input dimension is currently sum of states + parameters + time (1)
+            # TODO: increase input dimension by 1 by parameterizing gamma
+            state_mean=[0, 0, 0, 0], 
+            state_var=[1, 1, self.angle_alpha_factor*math.pi, 1],
+            value_mean=0.25, 
+            value_var=0.5, 
+            value_normto=0.02,
+            deepreach_model="exact"
+        )
+
+    def state_test_range(self):
+        return [
+            [-1, 1],
+            [-1, 1],
+            [-math.pi, math.pi],
+            [0, 1]
+        ]
+
+    def equivalent_wrapped_state(self, state):
+        wrapped_state = torch.clone(state)
+        wrapped_state[..., 2] = ((wrapped_state[..., 2] + math.pi) % (2*math.pi)) - math.pi
+        return wrapped_state
+        
+    # Dubins3D dynamics
+    # \dot x    = v \cos \theta
+    # \dot y    = v \sin \theta
+    # \dot \theta = u
+    def dsdt(self, state, control): # , disturbance
+        if self.freeze_model:
+            raise NotImplementedError
+        dsdt = torch.zeros_like(state)
+        dsdt[..., 0] = self.velocity*torch.cos(state[..., 2])
+        dsdt[..., 1] = self.velocity*torch.sin(state[..., 2])
+        dsdt[..., 2] = control[..., 0]
+        return dsdt
+    
+    def boundary_fn(self, state):
+        return torch.norm(state[..., :2], dim=-1) - self.goalR
+
+    def sample_target_state(self, num_samples):
+        raise NotImplementedError
+    
+    def cost_fn(self, state_traj):
+        return torch.min(self.boundary_fn(state_traj), dim=-1).values
+    
+    # take the state (+1 from before)
+    # index the position in the state where gamma is (put it last)
+    def hamiltonian(self, state, dvds, value, maxGamma):
+        gamma = state[..., 3] * maxGamma
+        if self.freeze_model:
+            raise NotImplementedError
+        if self.set_mode == 'reach':
+            return self.velocity*(torch.cos(state[..., 2]) * dvds[..., 0] + torch.sin(state[..., 2]) * dvds[..., 1]) - self.omega_max * torch.abs(dvds[..., 2]) 
+        elif self.set_mode == 'avoid':
+            return self.velocity*(torch.cos(state[..., 2]) * dvds[..., 0] + torch.sin(state[..., 2]) * dvds[..., 1]) + self.omega_max * torch.abs(dvds[..., 2]) + gamma* value
 
     def optimal_control(self, state, dvds):
         if self.set_mode == 'reach':

@@ -23,12 +23,13 @@ from utils import diff_operators
 from utils.error_evaluators import scenario_optimization, ValueThresholdValidator, MultiValidator, MLPConditionedValidator, target_fraction, MLP, MLPValidator, SliceSampleGenerator
 
 class Experiment(ABC):
-    def __init__(self, model, dataset, experiment_dir, use_wandb):
+    def __init__(self, model, dataset, experiment_dir, use_wandb, rollout):
         self.model = model
         self.dataset = dataset
         self.experiment_dir = experiment_dir
         self.use_wandb = use_wandb
         self.N = self.dataset.dynamics.state_dim
+        self.rollout = rollout
 
     @abstractmethod
     def init_special(self):
@@ -141,126 +142,6 @@ class Experiment(ABC):
         if was_training:
             self.model.train()
             self.model.requires_grad_(True)
-    
-    def validateND(self, epoch, save_path, x_resolution, y_resolution, z_resolution, time_resolution, plot_value=True):
-        was_training = self.model.training
-        self.model.eval()
-        self.model.requires_grad_(False)
-
-        plot_config = self.dataset.dynamics.plot_config()
-
-        state_test_range = self.dataset.dynamics.state_test_range()
-        x_min, x_max = state_test_range[plot_config['x_axis_idx']]
-        y_min, y_max = state_test_range[plot_config['y_axis_idx']]
-        # z_min, z_max = state_test_range[plot_config['z_axis_idx']]
-
-        times = torch.linspace(0, self.dataset.tMax, time_resolution)
-        xs = torch.linspace(x_min, x_max, x_resolution)
-        ys = torch.linspace(y_min, y_max, y_resolution)
-        # zs = torch.linspace(z_min, z_max, z_resolution)
-        xys = torch.cartesian_prod(xs, ys)
-        Xg, Yg = torch.meshgrid(xs, ys)
-        
-        ## Plot Set and Value Fn
-
-        fig_set = plt.figure(figsize=(5*len(times), 3*5*1))
-        fig_val = plt.figure(figsize=(5*len(times), 3*5*1))
-
-        for i in range(3*len(times)):
-            
-            ax_set = fig_set.add_subplot(3, len(times), 1+i)
-            ax_val = fig_val.add_subplot(3, len(times), 1+i, projection='3d')
-            ax_set.set_title('t = %0.2f' % (times[i % len(times)]))
-            ax_val.set_title('t = %0.2f' % (times[i % len(times)]))
-
-            ## Define Grid Slice to Plot
-
-            coords = torch.zeros(x_resolution*y_resolution, self.dataset.dynamics.state_dim + 1)
-            coords[:, 0] = times[i % len(times)]
-            coords[:, 1:] = torch.tensor(plot_config['state_slices']) # initialized to zero (nothing else to set!)
-
-            if i < len(times): # xN - xi plane
-                ax_set.set_xlabel("xN"); ax_set.set_ylabel("xi")
-                ax_val.set_xlabel("xN"); ax_val.set_ylabel("xi")
-                coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
-                coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
-
-            elif i < 2*len(times): # xi - xj plane
-                ax_set.set_xlabel("xi"); ax_set.set_ylabel("xj")
-                ax_val.set_xlabel("xi"); ax_val.set_ylabel("xj")
-                coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 0]
-                coords[:, 1 + plot_config['z_axis_idx']] = xys[:, 1]
-
-            else: # xN - (xi = xj) plane
-                ax_set.set_xlabel("xN"); ax_set.set_ylabel("xi=xj")
-                ax_val.set_xlabel("xN"); ax_val.set_ylabel("xi=xj")
-                coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
-                coords[:, 2:] = (xys[:, 1] * torch.ones(self.N-1, xys.size()[0])).t()
-
-            with torch.no_grad():
-                model_results = self.model({'coords': self.dataset.dynamics.coord_to_input(coords.cuda())})
-                values = self.dataset.dynamics.io_to_value(model_results['model_in'].detach(), model_results['model_out'].squeeze(dim=-1).detach())
-            
-            learned_value = values.detach().cpu().numpy().reshape(x_resolution, y_resolution)
-
-            ## Plot Zero-level Set of Learned Value
-
-            s = ax_set.imshow(1*(learned_value.T <= 0), cmap='bwr', origin='lower', extent=(-1., 1., -1., 1.))
-            divider = make_axes_locatable(ax_set)
-            cax = divider.append_axes("right", size="5%", pad=0.05)
-            fig_set.colorbar(s, cax=cax)
-
-            ## Plot Ground-Truth Zero-Level Contour
-
-            n_grid_plane_pts = int(self.dataset.n_grid_pts/3)
-            n_grid_len = int(n_grid_plane_pts ** 0.5)
-            pix_start = (i // len(times)) * n_grid_plane_pts
-            tix_start = (i % len(times)) * self.dataset.n_grid_pts
-            ix = pix_start + tix_start
-            Vg = self.dataset.values_DP_grid[ix:ix+n_grid_plane_pts][:n_grid_len**2].reshape(n_grid_len, n_grid_len)
-            # Vg = self.dataset.values_DP_grid[ix:ix+n_grid_plane_pts]
-            
-            ax_set.contour(self.dataset.X1g, self.dataset.X2g, Vg.cpu(), [0.])
-
-            ## Plot the Linear Ground-Truth (ideal warm-start) Zero-Level Contour
-
-            Vg = self.dataset.values_DP_linear_grid[ix:ix+n_grid_plane_pts][:n_grid_len**2].reshape(n_grid_len, n_grid_len)
-            # Vg = self.dataset.values_DP_linear_grid[ix:ix+n_grid_plane_pts]
-
-            ax_set.contour(self.dataset.X1g, self.dataset.X2g, Vg.cpu(), [0.], colors='gold', linestyles='dashed')
-
-            ## Plot 3D Value Fn
-
-            if plot_value:
-                if learned_value.min() > 0:
-                    RdWhBl_vscaled = matplotlib.colors.LinearSegmentedColormap.from_list('RdWhBl_vscaled', [(1,1,1), (0.5,0.5,1), (0,0,1), (0,0,1)])
-                elif learned_value.max() < 0:
-                    RdWhBl_vscaled = matplotlib.colors.LinearSegmentedColormap.from_list('RdWhBl_vscaled', [(1,0,0), (1,0,0), (1,0.5,0.5), (1,1,1)])
-                else:
-                    n_bins_high = int(256 * (learned_value.max()/(learned_value.max() - learned_value.min())) // 1)
-                    RdWh = matplotlib.colors.LinearSegmentedColormap.from_list('RdWh', [(1,0,0), (1,0,0), (1,0.5,0.5), (1,1,1)])
-                    WhBl = matplotlib.colors.LinearSegmentedColormap.from_list('WhBl', [(1,1,1), (0.5,0.5,1), (0,0,1), (0,0,1)])
-                    colors = np.vstack((RdWh(np.linspace(0., 1, 256-n_bins_high)), WhBl(np.linspace(0., 1, n_bins_high))))
-                    RdWhBl_vscaled = matplotlib.colors.LinearSegmentedColormap.from_list('RdWhBl_vscaled', colors)
-                
-                ax_val.view_init(elev=15, azim=-60)
-                surf = ax_val.plot_surface(Xg, Yg, learned_value, cmap=RdWhBl_vscaled) #cmap='bwr_r')
-                fig_val.colorbar(surf, ax=ax_val, fraction=0.02, pad=0.1)
-                ax_val.set_zlim(-max(ax_val.get_zlim()[1]/5, 0.5))
-                ax_val.contour(Xg, Yg, learned_value, zdir='z', offset=ax_val.get_zlim()[0], cmap=RdWh, levels=[0.]) #cmap='bwr_r')
-
-        fig_set.savefig(save_path)
-        if plot_value: fig_val.savefig(save_path.split('_epoch')[0] + '_Vfn' + save_path.split('_epoch')[1])
-        if self.use_wandb:
-            log_dict_plot = {'step': epoch,
-                        'val_plot': wandb.Image(fig_set),} # (silly) legacy name
-            if plot_value: log_dict_plot['val_fn_plot'] = wandb.Image(fig_val)
-            wandb.log(log_dict_plot)
-        plt.close()
-
-        if was_training:
-            self.model.train()
-            self.model.requires_grad_(True)
 
     def validate2(self, epoch, epochs, save_path, x_resolution, y_resolution, z_resolution, time_resolution):
         was_training = self.model.training
@@ -302,7 +183,7 @@ class Experiment(ABC):
             for j in range(len(zs)):
                 coords = torch.zeros(x_resolution*y_resolution, self.dataset.dynamics.state_dim + 1)
                 coords[:, 0] = times[i]
-                coords[:, 1:] = torch.tensor(plot_config['state_slices'])
+                coords[:, 1:-1] = torch.tensor(plot_config['state_slices'])
                 coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
                 coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
                 coords[:, 1 + plot_config['z_axis_idx']] = zs[j]
@@ -343,33 +224,33 @@ class Experiment(ABC):
                 ax_2d.set_title('t = %0.2f, %s = %0.2f' % (times[i], plot_config['state_labels'][plot_config['z_axis_idx']], zs[j]))
                 fig_2d.colorbar(s, ax=ax_2d)  # Add colorbar for the 2D plot
 
-
-                scenario_batch_size = 1
-                initial_states = self.initialize_states_with_general_displacement(
-                    state_dim=self.dataset.dynamics.state_dim, 
-                    theta=zs[j],  # Use the zs tensor for orientations
-                    displacement=0.75  # Displace by 0.5
-                )
-
-
-                if epoch == epochs: # and j == 2
-                    state_trajs, ctrl_trajs = self.trajectory_rollout(
-                        policy=self.model, 
-                        dynamics=self.dataset.dynamics,
-                        tMin=self.dataset.tMin,
-                        tMax=times[i],
-                        dt=max(times) / epochs * 10,
-                        scenario_batch_size=scenario_batch_size, # not sure what I should set this to... 
-                        initial_states=initial_states
+                if self.rollout:
+                    scenario_batch_size = 1
+                    initial_states = self.initialize_states_with_general_displacement(
+                        state_dim=self.dataset.dynamics.state_dim, 
+                        theta=zs[j],  # Use the zs tensor for orientations
+                        displacement=0.75  # Displace by 0.5
                     )
 
-                    # plot rolled-out trajectories on the 2D plot
-                    for k in range(state_trajs.shape[0]):
-                        x_traj = state_trajs[k, :, plot_config['x_axis_idx']].cpu().numpy() 
-                        y_traj = state_trajs[k, :, plot_config['y_axis_idx']].cpu().numpy() 
-                        ax_2d.plot(x_traj, y_traj, color='white', lw=1.0, label=f'Trajectory {k + 1}')
-                        ax_2d.scatter(x_traj[0], y_traj[0], color='green', s=100, zorder=5, label=f'Start {k+1}' if k == 0 else "")
-                        ax_2d.scatter(x_traj[-1], y_traj[-1], color='red', s=100, zorder=5, label=f'End {k+1}' if k == 0 else "")
+
+                    if epoch == epochs: # and j == 2
+                        state_trajs, ctrl_trajs = self.trajectory_rollout(
+                            policy=self.model, 
+                            dynamics=self.dataset.dynamics,
+                            tMin=self.dataset.tMin,
+                            tMax=times[i],
+                            dt=max(times) / epochs * 10,
+                            scenario_batch_size=scenario_batch_size, # not sure what I should set this to... 
+                            initial_states=initial_states
+                        )
+
+                        # plot rolled-out trajectories on the 2D plot
+                        for k in range(state_trajs.shape[0]):
+                            x_traj = state_trajs[k, :, plot_config['x_axis_idx']].cpu().numpy() 
+                            y_traj = state_trajs[k, :, plot_config['y_axis_idx']].cpu().numpy() 
+                            ax_2d.plot(x_traj, y_traj, color='white', lw=1.0, label=f'Trajectory {k + 1}')
+                            ax_2d.scatter(x_traj[0], y_traj[0], color='green', s=100, zorder=5, label=f'Start {k+1}' if k == 0 else "")
+                            ax_2d.scatter(x_traj[-1], y_traj[-1], color='red', s=100, zorder=5, label=f'End {k+1}' if k == 0 else "")
 
                         
             # # After processing all z-slices for the current time step, add the minimum z-values plot
@@ -416,8 +297,7 @@ class Experiment(ABC):
             steps_til_summary, epochs_til_checkpoint, 
             loss_fn, clip_grad, use_lbfgs, adjust_relative_grads, 
             val_x_resolution, val_y_resolution, val_z_resolution, val_time_resolution,
-            use_CSL, CSL_lr, CSL_dt, epochs_til_CSL, num_CSL_samples, CSL_loss_frac_cutoff, max_CSL_epochs, CSL_loss_weight, CSL_batch_size
-        ):
+            ):
         was_eval = not self.model.training
         self.model.train()
         self.model.requires_grad_(True)
@@ -453,13 +333,7 @@ class Experiment(ABC):
 
         with tqdm(total=len(train_dataloader) * epochs) as pbar:
             train_losses = []
-            last_CSL_epoch = -1
-            for epoch in range(0, epochs):
-                if self.dataset.pretrain: # skip CSL
-                    last_CSL_epoch = epoch
-                time_interval_length = (self.dataset.counter/self.dataset.counter_end)*(self.dataset.tMax-self.dataset.tMin)
-                CSL_tMax = self.dataset.tMin + int(time_interval_length/CSL_dt)*CSL_dt
-                
+            for epoch in range(0, epochs):                
                 # self-supervised learning
                 for step, (model_input, gt) in enumerate(train_dataloader):
                     start_time = time.time()

@@ -1,17 +1,18 @@
 import torch
 
 # uses real units
-def init_brt_hjivi_loss(dynamics, minWith, gamma, dirichlet_loss_divisor):
+def init_brt_hjivi_loss(dynamics, minWith, dirichlet_loss_divisor, maxGamma):
     def brt_hjivi_loss(state, value, dvdt, dvds, boundary_value, dirichlet_mask, output):
         if torch.all(dirichlet_mask):
             # pretraining loss
             diff_constraint_hom = torch.Tensor([0])
         else:
-            ham = dynamics.hamiltonian(state, dvds)
+            ham = dynamics.hamiltonian(state, dvds, value, maxGamma)
             if minWith == 'zero':
                 ham = torch.clamp(ham, max=0.0)
 
-            diff_constraint_hom = dvdt - ham - gamma * value
+            # gamma = state[..., 3]
+            diff_constraint_hom = dvdt - ham
             if minWith == 'target':
                 diff_constraint_hom = torch.max(
                     diff_constraint_hom, value - boundary_value)
