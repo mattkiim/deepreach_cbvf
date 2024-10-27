@@ -11,7 +11,6 @@ def init_brt_hjivi_loss(dynamics, minWith, dirichlet_loss_divisor, maxGamma):
             if minWith == 'zero':
                 ham = torch.clamp(ham, max=0.0)
 
-            # gamma = state[..., 3]
             diff_constraint_hom = dvdt - ham
             if minWith == 'target':
                 diff_constraint_hom = torch.max(
@@ -30,7 +29,7 @@ def init_brt_hjivi_loss(dynamics, minWith, dirichlet_loss_divisor, maxGamma):
     return brt_hjivi_loss
 
 
-def init_brat_hjivi_loss(dynamics, minWith, gamma, dirichlet_loss_divisor):
+def init_brat_hjivi_loss(dynamics, minWith, dirichlet_loss_divisor, maxGamma):
     def brat_hjivi_loss(state, value, dvdt, dvds, boundary_value, reach_value, avoid_value, dirichlet_mask, output):
         if torch.all(dirichlet_mask):
             # pretraining loss
@@ -40,7 +39,7 @@ def init_brat_hjivi_loss(dynamics, minWith, gamma, dirichlet_loss_divisor):
             if minWith == 'zero':
                 ham = torch.clamp(ham, max=0.0)
 
-            diff_constraint_hom = dvdt - ham - gamma * value
+            diff_constraint_hom = dvdt - ham 
             if minWith == 'target':
                 diff_constraint_hom = torch.min(
                     torch.max(diff_constraint_hom, value - reach_value), value + avoid_value)

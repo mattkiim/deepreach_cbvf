@@ -189,9 +189,9 @@ experiment.init_special(**{argname: getattr(orig_opt, argname) for argname in in
 
 if (mode == 'all') or (mode == 'train'):
     if dynamics.loss_type == 'brt_hjivi':
-        loss_fn = losses.init_brt_hjivi_loss(dynamics, orig_opt.minWith, orig_opt.gamma, orig_opt.dirichlet_loss_divisor)
+        loss_fn = losses.init_brt_hjivi_loss(dynamics, orig_opt.minWith, orig_opt.dirichlet_loss_divisor, orig_opt.gamma)
     elif dynamics.loss_type == 'brat_hjivi':
-        loss_fn = losses.init_brat_hjivi_loss(dynamics, orig_opt.minWith, orig_opt.gamma, orig_opt.dirichlet_loss_divisor)
+        loss_fn = losses.init_brat_hjivi_loss(dynamics, orig_opt.minWith, orig_opt.dirichlet_loss_divisor, orig_opt.gamma)
     else:
         raise NotImplementedError
     experiment.train(
