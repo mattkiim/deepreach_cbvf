@@ -35,7 +35,7 @@ model = model.cuda()  # Move model to GPU
 model.eval()
 
 # Visualization function
-def visualize_value_function(model, dynamics, save_path, x_resolution=1000, y_resolution=1000, z_resolution=5, time_resolution=10):
+def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_resolution=100, z_resolution=3, time_resolution=3):
     plot_config = dynamics.plot_config()
 
     state_test_range = dynamics.state_test_range()
@@ -93,14 +93,13 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=1000, y_re
 
             ax_2d.contour(xs, ys, values_reshaped.T, levels=[0], colors='black')
             
-            # New: Plot 2D level sets at various Z-slices (e.g., every 0.1)
-            ax_level_set = fig_level_sets.add_subplot(len(times), len(gammas), (j+1) + i * len(gammas))
-            ax_2d.set_aspect('equal')
-            z_slices = torch.linspace(z_min, z_max, 10)  # Dividing into 0.1 intervals
+            # ax_level_set = fig_level_sets.add_subplot(len(times), len(gammas), (j+1) + i * len(gammas))
+            # ax_2d.set_aspect('equal')
+            # z_slices = torch.linspace(z_min, z_max, 10)  # Dividing into 0.1 intervals
 
-            for z in z_slices:
-                z_slice_values = np.where(values_reshaped.T == z.item(), values_reshaped.T, np.nan)
-                ax_level_set.contour(xs, ys, z_slice_values, levels=[0], cmap='coolwarm')
+            # for z in z_slices:
+            #     z_slice_values = np.where(values_reshaped.T == z.item(), values_reshaped.T, np.nan)
+            #     ax_level_set.contour(xs, ys, z_slice_values, levels=[0], cmap='coolwarm')
 
 
 

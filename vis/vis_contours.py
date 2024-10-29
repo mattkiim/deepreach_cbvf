@@ -35,7 +35,7 @@ model = model.cuda()  # Move model to GPU
 model.eval()
 
 # Visualization function
-def visualize_value_function(model, dynamics, save_path, x_resolution=1000, y_resolution=1000, z_resolution=3, time_resolution=3):
+def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_resolution=100, z_resolution=3, time_resolution=3):
     plot_config = dynamics.plot_config()
 
     state_test_range = dynamics.state_test_range()
@@ -66,7 +66,7 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=1000, y_re
                 model_input = dynamics.coord_to_input(coords.cuda())
                 model_results = model({'coords': model_input})
                 values = dynamics.io_to_value(model_results['model_in'].detach(),
-                                              model_results['model_out'].squeeze(dim=-1).detach())
+                                              model_results['model_out'].squeeze(dim=-1).detach()) # TODO: save this
                 
                 print(f"Value range: min = {values.min().item()}, max = {values.max().item()}")
 
