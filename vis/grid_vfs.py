@@ -1,5 +1,7 @@
 import sys
 import os
+sys.path.append(os.path.abspath(".."))
+
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -35,7 +37,7 @@ model = model.cuda()  # Move model to GPU
 model.eval()
 
 # Visualization function
-def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_resolution=100, z_resolution=30, time_resolution=3):
+def visualize_value_function(model, dynamics, x_resolution=100, y_resolution=100, z_resolution=30, time_resolution=3):
     plot_config = dynamics.plot_config()
 
     state_test_range = dynamics.state_test_range()
@@ -50,13 +52,8 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
     xyzs = torch.cartesian_prod(xs, ys, zs)
     print(xyzs.shape)
     
-    
-    fig_3d = plt.figure(figsize=(5 * len(times), 5 * len(zs)))
-    fig_2d = plt.figure(figsize=(5 * (len(times)), 5 * (len(zs)+5)))
-    fig_level_sets = plt.figure(figsize=(5 * len(times), 5 * len(zs)))
 
-
-    gammas = [0, 0.3, 0.5]
+    gammas = [1.]
     for gamma in gammas:
         coords = torch.zeros(x_resolution * y_resolution * z_resolution, dynamics.state_dim + 1)
         coords[:, 0] = 1
@@ -64,7 +61,7 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
         coords[:, 1 + plot_config['x_axis_idx']] = xyzs[:, 0]
         coords[:, 1 + plot_config['y_axis_idx']] = xyzs[:, 1]
         coords[:, 1 + plot_config['z_axis_idx']] = xyzs[:, 2]
-        coords[:, -1] = gamma  # Assign gamma as the last value
+        coords[:, -1] = gamma
 
         with torch.no_grad():
             model_input = dynamics.coord_to_input(coords.cuda())
@@ -72,12 +69,11 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
             values = dynamics.io_to_value(model_results['model_in'].detach(),
                                             model_results['model_out'].squeeze(dim=-1).detach())
             
-                # print(f"Value range: min = {values.min().item()}, max = {values.max().item()}")
 
 
-            # Reshape values for plotting
             values_reshaped = values.cpu().numpy().reshape(x_resolution, y_resolution, z_resolution)
             print(values_reshaped.shape) # should be 100 x 100 x 30
-
-            # Save the reshaped values to a .npy file
             np.save(f"dr_gamma_{gamma}.npy", values_reshaped)
+
+
+visualize_value_function(model, dynamics)

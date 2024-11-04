@@ -12,6 +12,10 @@ from dynamics.dynamics import Dubins3D_P
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 import matplotlib.transforms as transforms
 
+seed = 1
+torch.manual_seed(seed)
+np.random.seed(seed)
+
 # Initialize the dynamics object
 dynamics = Dubins3D_P(goalR=0.25, velocity=1.0, omega_max=3.14, angle_alpha_factor=1.2, set_mode='avoid', freeze_model=False)
 
@@ -35,17 +39,49 @@ model.load_state_dict(checkpoint['model'])
 model = model.cuda()  # Move model to GPU
 model.eval()
 
-# Function to initialize states with general displacement
-def initialize_states_with_general_displacement(state_dim, theta, displacement, gamma):
-    initial_states = torch.zeros(state_dim)
-    
-    x_start = -displacement * torch.cos(theta)  # x-coordinate displaced opposite to the orientation
-    y_start = -displacement * torch.sin(theta)  # y-coordinate displaced opposite to the orientation
+def vf_eval(xys, plot_config, dynamics, model, gamma, time, x_resolution=100, y_resolution=100):
 
-    initial_states[0] = x_start  # x position
-    initial_states[1] = y_start  # y position
-    initial_states[2] = theta  # orientation angle
-    initial_states[3] = gamma
+    coords = torch.zeros(x_resolution * y_resolution, dynamics.state_dim + 1)
+    coords[:, 0] = time
+    coords[:, 1:-1] = torch.tensor(plot_config['state_slices'])
+    coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
+    coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
+    coords[:, 1 + plot_config['z_axis_idx']] = 0 # angle
+    coords[:, -1] = gamma  # Assign gamma as the last value
+
+    # Evaluate the value function
+    with torch.no_grad():
+        model_input = dynamics.coord_to_input(coords.cuda())
+        model_results = model({'coords': model_input})
+        values = dynamics.io_to_value(model_results['model_in'].detach(), model_results['model_out'].squeeze(dim=-1).detach())
+
+    return values
+
+
+def vf_safe(xys, vf):
+    safe_indices = torch.where(vf >= 0)[0].to(xys.device) # Non-negative values indicate safe areas
+    print(safe_indices)
+    safe_points = xys[safe_indices]
+
+    return safe_points
+
+
+def initialize_states(xys, vf, state_dim, theta, gamma):
+    zls = vf_safe(xys, vf)
+    initial_states = zls[0]
+    print(initial_states)
+
+    # initial_states = torch.zeros(state_dim)
+    
+    # x_start = torch.rand(1).item() * 2 - 1 
+    # y_start = torch.rand(1).item() * 2 - 1 
+    # theta = torch.rand(1).item() * 2 * torch.pi 
+
+    # initial_states[0] = x_start
+    # initial_states[1] = y_start
+    # initial_states[2] = theta
+
+    # initial_states[3] = gamma
 
     return initial_states
 
@@ -97,24 +133,20 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
     car_image_path = 'car.png'  # Replace with the path to your car image
     car_image = plt.imread(car_image_path)
 
-    for i, time in enumerate(times):
-        for j, gamma in enumerate(gammas):
-            coords = torch.zeros(x_resolution * y_resolution, dynamics.state_dim + 1)
-            coords[:, 0] = time
-            coords[:, 1:-1] = torch.tensor(plot_config['state_slices'])
-            coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
-            coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
-            coords[:, 1 + plot_config['z_axis_idx']] = 0 # angle
-            coords[:, -1] = gamma  # Assign gamma as the last value
+    for j, gamma in enumerate(gammas):
+        initial_state_seed = torch.rand(1).item()
+        
+        
+        for i, time in enumerate(times):
+            values = vf_eval(xys, plot_config, dynamics, model, gamma, time)
 
-            with torch.no_grad():
-                model_input = dynamics.coord_to_input(coords.cuda())
-                model_results = model({'coords': model_input})
-                values = dynamics.io_to_value(model_results['model_in'].detach(),
-                                              model_results['model_out'].squeeze(dim=-1).detach())
-                
-                print(f"Value range: min = {values.min().item()}, max = {values.max().item()}")
-
+            initial_states = initialize_states(
+                xys,
+                values,
+                state_dim=dynamics.state_dim, 
+                theta=torch.tensor(0), 
+                gamma=gamma
+            )
 
             # Reshape values for plotting
             values_reshaped = values.cpu().numpy().reshape(x_resolution, y_resolution)
@@ -127,28 +159,16 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
 
             ax_2d.contour(xs, ys, values_reshaped.T, levels=[0], colors='black')
 
-
-            # Initialize states      
-            initial_states = initialize_states_with_general_displacement(
-                state_dim=dynamics.state_dim, 
-                theta=torch.tensor(0),  # TODO: theta.item() to make it dynamic
-                displacement=0.75,
-                gamma=gamma
-            )
-            
             # Rollout the trajectories
             state_trajs, ctrl_trajs = trajectory_rollout(
                 policy=model,
                 dynamics=dynamics,
                 tMin=0,
                 tMax=times[i],
-                dt=(max(times) / epochs) * 1000,
+                dt=0.01,
                 scenario_batch_size=1,
                 initial_states=initial_states.unsqueeze(0) 
             )
-            # if time == 1:
-                # np.save(f"dr_traj_gamma_{gamma}.npy", state_trajs)
-                # if gamma == 1: quit()
             
             # Plot the trajectories
             for k in range(state_trajs.shape[0]):
@@ -159,25 +179,25 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
                 plt.scatter(x_traj[-1], y_traj[-1], color='red', s=50, zorder=5, label='End' if k == 0 else "")
                 
 
-                start_theta = state_trajs[k, 0, 2].item()  # Assuming theta is at index 2
-                end_theta = state_trajs[k, -1, 2].item()
+                # start_theta = state_trajs[k, 0, 2].item()  # Assuming theta is at index 2
+                # end_theta = state_trajs[k, -1, 2].item()
 
-                imagebox_start = OffsetImage(car_image, zoom=0.005)  # Adjust zoom for size
-                imagebox_end = OffsetImage(car_image, zoom=0.005)    # Adjust zoom for size
+                # imagebox_start = OffsetImage(car_image, zoom=0.005)  # Adjust zoom for size
+                # imagebox_end = OffsetImage(car_image, zoom=0.005)    # Adjust zoom for size
 
-                ab_start = AnnotationBbox(imagebox_start, (x_traj[0], y_traj[0]), frameon=False)
-                ab_end = AnnotationBbox(imagebox_end, (x_traj[-1], y_traj[-1]), frameon=False)
+                # ab_start = AnnotationBbox(imagebox_start, (x_traj[0], y_traj[0]), frameon=False)
+                # ab_end = AnnotationBbox(imagebox_end, (x_traj[-1], y_traj[-1]), frameon=False)
 
-                ab_start.set_transform(ab_start.get_transform() + transforms.Affine2D().rotate_deg(np.degrees(start_theta)))
-                ab_end.set_transform(ab_end.get_transform() + transforms.Affine2D().rotate_deg(np.degrees(end_theta)))
+                # ab_start.set_transform(ab_start.get_transform() + transforms.Affine2D().rotate_deg(np.degrees(start_theta)))
+                # ab_end.set_transform(ab_end.get_transform() + transforms.Affine2D().rotate_deg(np.degrees(end_theta)))
 
-                # Add the images to the plot
-                ax_2d.add_artist(ab_start)
-                ax_2d.add_artist(ab_end)
+                # # Add the images to the plot
+                # ax_2d.add_artist(ab_start)
+                # ax_2d.add_artist(ab_end)
 
 
     # Save plots
-    save_path_2d = os.path.splitext(save_path)[0] + model_name + '/value_function_trajs.png'
+    save_path_2d = os.path.splitext(save_path)[0] + model_name + '/many_trajectories.png'
     os.makedirs(os.path.dirname(save_path_2d), exist_ok=True)
     
     fig_2d.savefig(save_path_2d)
