@@ -46,11 +46,8 @@ class ReachabilityDataset(Dataset):
             # Only sample in time around the initial condition
             times = torch.full((self.numpoints, 1), self.tMin)
         else:
-            # Slowly grow time values from start time
-            times = self.tMin + torch.zeros(self.numpoints, 1).uniform_(0, (self.tMax - self.tMin) * (self.counter / self.counter_end)) # TODO uncomment when training non-Sean model
-            # times = torch.ones(self.numpoints, 1)
-            # Ensure training samples at the initial time
-            times[-self.num_src_samples:, 0] = self.tMin # TODO uncomment when training non-Sean model
+            times = torch.ones(self.numpoints, 1)
+            times[-self.num_src_samples:, 0] = self.tMin
 
         model_coords = torch.cat((times, model_states), dim=1)
 

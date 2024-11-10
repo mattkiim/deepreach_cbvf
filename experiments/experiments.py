@@ -385,18 +385,18 @@ class Experiment(ABC):
                                 grads_PDE.append(param.grad.view(-1))
                             grads_PDE = torch.cat(grads_PDE)
 
-                            # Gradients with respect to the boundary loss
-                            optim.zero_grad()
-                            losses['dirichlet'].backward(retain_graph=True)
-                            grads_dirichlet = []
-                            for key, param in params.items():
-                                grads_dirichlet.append(param.grad.view(-1))
-                            grads_dirichlet = torch.cat(grads_dirichlet)
+                            # # Gradients with respect to the boundary loss
+                            # optim.zero_grad()
+                            # losses['dirichlet'].backward(retain_graph=True)
+                            # grads_dirichlet = []
+                            # for key, param in params.items():
+                            #     grads_dirichlet.append(param.grad.view(-1))
+                            # grads_dirichlet = torch.cat(grads_dirichlet)
 
-                            num = torch.mean(torch.abs(grads_PDE))
-                            den = torch.mean(torch.abs(grads_dirichlet))
-                            new_weight = 0.9*new_weight + 0.1*num/den
-                            losses['dirichlet'] = new_weight*losses['dirichlet']
+                            # num = torch.mean(torch.abs(grads_PDE))
+                            # den = torch.mean(torch.abs(grads_dirichlet))
+                            # new_weight = 0.9*new_weight + 0.1*num/den
+                            # losses['dirichlet'] = new_weight*losses['dirichlet']
                         writer.add_scalar('weight_scaling', new_weight, total_steps) # TODO: make sure this is off
 
                     # import ipdb; ipdb.set_trace()

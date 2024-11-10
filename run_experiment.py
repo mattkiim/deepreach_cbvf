@@ -61,7 +61,7 @@ if (mode == 'all') or (mode == 'train'):
     p.add_argument('--model_mode', type=str, default='mlp', required=False, choices=['mlp', 'rbf', 'pinn'], help='Whether to use  uniform velocity parameter')
     p.add_argument('--num_hl', type=int, default=3, required=False, help='The number of hidden layers')
     p.add_argument('--num_nl', type=int, default=512, required=False, help='Number of neurons per hidden layer.')
-    p.add_argument('--deepreach_model', type=str, default='exact', required=False, choices=['exact', 'diff', 'vanilla'], help='deepreach model')
+    p.add_argument('--deepreach_model', type=str, default='vanilla', required=False, choices=['exact', 'diff', 'vanilla'], help='deepreach model')
 
     # training options
     p.add_argument('--epochs_til_ckpt', type=int, default=1000, help='Time interval in seconds until checkpoint is saved.')
@@ -189,7 +189,7 @@ experiment.init_special(**{argname: getattr(orig_opt, argname) for argname in in
 
 if (mode == 'all') or (mode == 'train'):
     if dynamics.loss_type == 'brt_hjivi':
-        loss_fn = losses.init_brt_hjivi_loss(dynamics, orig_opt.minWith, orig_opt.dirichlet_loss_divisor, orig_opt.gamma)
+        loss_fn = losses.init_cbf_loss(dynamics, orig_opt.minWith, orig_opt.dirichlet_loss_divisor, orig_opt.gamma)
     elif dynamics.loss_type == 'brat_hjivi':
         loss_fn = losses.init_brat_hjivi_loss(dynamics, orig_opt.minWith, orig_opt.dirichlet_loss_divisor, orig_opt.gamma)
     else:
