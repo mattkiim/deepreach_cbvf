@@ -11,13 +11,22 @@ from utils import modules, dataio, losses
 from dynamics.dynamics import Dubins3D_P, MultiVehicleCollision_P
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 import matplotlib.transforms as transforms
+import configargparse
+
+
+p = configargparse.ArgumentParser()
+p.add_argument('-r', '--radius', type=float, default=1.0, required=True, help='Radius of circle.')
+p.add_argument('-p', '--plot', default=False, required=True, help='Plot (T) or (F).')
+p.add_argument('-ss', '--seeds', type=int, default=-1, required=False, help='Seeds.')
+p.add_argument('-s', '--seed', type=int, default=0, required=False, help='Seed.')
+opt = p.parse_args()
 
 # Initialize the dynamics object
 dynamics = MultiVehicleCollision_P()
 
 # Load the trained model
 epochs = 500000
-model_name = "mvc_t2_g1"
+model_name = "mvc_t3_g1"
 model_path = f"/home/ubuntu/deepreach_cbvf/runs/{model_name}/training/checkpoints/model_epoch_{epochs}.pth"
 checkpoint = torch.load(model_path)
 
@@ -36,7 +45,7 @@ model = model.cuda()  # Move model to GPU
 model.eval()
 
 
-def initialize_states(state_dim, radius, gamma, seed=0, max_deviation=np.radians(10)):
+def initialize_states_circle(state_dim, radius, gamma, seed=0, max_deviation=np.radians(10)):
     initial_states = torch.zeros(state_dim)
     
     # Set the seed for reproducibility
@@ -108,6 +117,56 @@ def initialize_states_random(state_dim, gamma, position_range=[-1, 1], orientati
 
     return initial_states
 
+def initialize_states_circle_2(state_dim, radius, gamma, seed=0, max_deviation=np.radians(10), min_distance=0.5):
+    initial_states = torch.zeros(state_dim)
+    
+    # Set the seed for reproducibility
+    torch.manual_seed(seed)
+    
+    valid_positions = False  # Flag to check if we have a valid position setup
+    
+    while not valid_positions:
+        # Randomly select three angles on the circumference
+        angles = torch.rand(3) * 2 * np.pi  # Three random angles between 0 and 2π
+
+        # Calculate positions for each vehicle based on the randomly chosen angles
+        position_A = (radius * torch.cos(angles[0]), radius * torch.sin(angles[0]))  # Vehicle A
+        position_B = (radius * torch.cos(angles[1]), radius * torch.sin(angles[1]))  # Vehicle B
+        position_C = (radius * torch.cos(angles[2]), radius * torch.sin(angles[2]))  # Vehicle C
+
+        # Calculate pairwise distances
+        distance_AB = torch.norm(torch.tensor(position_A) - torch.tensor(position_B))
+        distance_AC = torch.norm(torch.tensor(position_A) - torch.tensor(position_C))
+        distance_BC = torch.norm(torch.tensor(position_B) - torch.tensor(position_C))
+
+        # Check if all distances are greater than min_distance
+        if distance_AB >= min_distance and distance_AC >= min_distance and distance_BC >= min_distance:
+            valid_positions = True
+
+    # Generate a random deviation within the range [-max_deviation, max_deviation]
+    deviation_A = (torch.rand(1).item() - 0.5) * 2 * max_deviation
+    deviation_B = (torch.rand(1).item() - 0.5) * 2 * max_deviation
+    deviation_C = (torch.rand(1).item() - 0.5) * 2 * max_deviation
+
+    # Set the ego vehicle's position and orientation with a slight deviation
+    initial_states[0] = position_A[0]  # Ego x position
+    initial_states[1] = position_A[1]  # Ego y position
+    initial_states[6] = torch.atan2(-position_A[1], -position_A[0]) + deviation_A  # Orientation with deviation
+
+    # Set Agent 1's position and orientation with a slight deviation
+    initial_states[2] = position_B[0]  # Agent 1 x position
+    initial_states[3] = position_B[1]  # Agent 1 y position
+    initial_states[7] = torch.atan2(-position_B[1], -position_B[0]) + deviation_B  # Orientation with deviation
+
+    # Set Agent 2's position and orientation with a slight deviation
+    initial_states[4] = position_C[0]  # Agent 2 x position
+    initial_states[5] = position_C[1]  # Agent 2 y position
+    initial_states[8] = torch.atan2(-position_C[1], -position_C[0]) + deviation_C  # Orientation with deviation
+    
+    # Set gamma for the ego vehicle
+    initial_states[9] = gamma  # Gamma value
+
+    return initial_states
 
 def trajectory_rollout(policy, dynamics, tMin, tMax, dt, scenario_batch_size, initial_states):
     
@@ -134,9 +193,22 @@ def trajectory_rollout(policy, dynamics, tMin, tMax, dt, scenario_batch_size, in
 
     return state_trajs, ctrl_trajs
 
+def boundary_fn(state):
+    xy1 = state[:, :, :2]
+    xy2 = state[:, :, 2:4]
+    xy3 = state[:, :, 4:6]
+
+    distance_12 = torch.norm(xy1 - xy2, dim=-1)  
+    distance_13 = torch.norm(xy1 - xy3, dim=-1)  
+    distance_23 = torch.norm(xy2 - xy3, dim=-1) 
+
+    min_distance = torch.min(torch.min(distance_12, distance_13), distance_23) - 0.25
+
+    return min_distance, torch.min(min_distance)
+
 
 def visualize_value_function(model, dynamics, save_path, radius=1, x_resolution=100, y_resolution=100, z_resolution=3, time_resolution=3, seed=0, plot=False):
-    ax_size = 2* np.ceil(radius)
+    ax_size = 2 * np.ceil(radius)
     plot_config = dynamics.plot_config()
 
     state_test_range = dynamics.state_test_range()
@@ -148,13 +220,17 @@ def visualize_value_function(model, dynamics, save_path, radius=1, x_resolution=
     xs = torch.linspace(x_min, x_max, x_resolution)
     ys = torch.linspace(y_min, y_max, y_resolution)
     zs = torch.linspace(z_min, z_max, z_resolution) # theta
-    gammas = torch.linspace(0, 1, z_resolution)  # gamma
+    gammas = torch.linspace(0, 2, z_resolution)  # gamma
     xys = torch.cartesian_prod(xs, ys)
     
     
     fig_2d = plt.figure(figsize=(5 * len(times), 5 * len(zs)))
     car_image_path = 'car.png'  # Replace with the path to your car image
     car_image = plt.imread(car_image_path)
+
+    bcs_min = []
+    bcs = []
+
 
     for i, time in enumerate(times):
         temp_trajs = np.zeros((1, 1, 10))
@@ -187,7 +263,7 @@ def visualize_value_function(model, dynamics, save_path, radius=1, x_resolution=
             #     seed=seed
             # )
 
-            initial_states = initialize_states(
+            initial_states = initialize_states_circle_2(
                 state_dim=dynamics.state_dim,
                 radius=radius,
                 gamma=gamma,
@@ -205,11 +281,20 @@ def visualize_value_function(model, dynamics, save_path, radius=1, x_resolution=
                 initial_states=initial_states.unsqueeze(0) 
             )
 
-            if np.array_equal(state_trajs[:, :, 9], temp_trajs[:, :, 9]): print("wtf")
+            # if np.array_equal(state_trajs[:, :, 9], temp_trajs[:, :, 9]): print("wtf")
             temp_trajs = state_trajs
 
-            norm = np.linalg.norm(state_trajs[:, :, :9])
+            t1 = state_trajs[:, :, :3]
+            t2 = state_trajs[:, :, 3:6]
+            t3 = state_trajs[:, :, 6:9]
+            norm = np.linalg.norm(t1 - t2) + np.linalg.norm(t2 - t3) + np.linalg.norm(t1 - t3)
             norms.append(norm)
+
+            # bc, bc_min = boundary_fn(state_trajs)
+            bc = dynamics.boundary_fn(state_trajs)
+            if i == len(times)-1: 
+                bcs_min.append(torch.min(bc).item())
+                bcs.append(bc)
 
             # Plot trajectories
             if plot: 
@@ -220,29 +305,71 @@ def visualize_value_function(model, dynamics, save_path, radius=1, x_resolution=
                         ax_2d.plot(x_traj, y_traj, lw=2, label=f'Vehicle {vehicle_index + 1} Trajectory')
                         ax_2d.scatter(x_traj[0], y_traj[0], color='green', s=50, zorder=5, label='Start' if k == 0 else "")
                         ax_2d.scatter(x_traj[-1], y_traj[-1], color='red', s=50, zorder=5, label='End' if k == 0 else "")
-        
-        # print(seed, norms)
 
     # Save plots
     save_path_2d = os.path.splitext(save_path)[0] + model_name + '/value_function_trajs.png'
     os.makedirs(os.path.dirname(save_path_2d), exist_ok=True)
     
     fig_2d.savefig(save_path_2d)
-
     plt.close(fig_2d)
 
-    return norms
+    return norms, bcs_min, bcs
 
 # Call the visualization function
 
-# seeds = range(100)
-seeds = [2]
+seeds = None
+if opt.seeds == -1: seeds = [opt.seed]
+else: seeds = range(opt.seeds)
 
 norms_list = []
+bcs_min_list = []
+bcs_list = []
+
+SAVE_PATH = '/home/ubuntu/deepreach_cbvf/runs/'
 
 for seed in seeds: 
-    norms = visualize_value_function(model, dynamics, radius=.5, save_path='/home/ubuntu/deepreach_cbvf/runs/', seed=seed, plot=True)
+    norms, bcs_min, bcs = visualize_value_function(model, dynamics, radius=opt.radius, save_path=SAVE_PATH, seed=seed, plot=opt.plot)
     norms_list.append(norms)
+    bcs_min_list.append(bcs_min)
+    bcs_list.append(bcs)
 
-for i, norms in enumerate(norms_list):
-    print(i, norms_list)
+
+output_file_path = os.path.splitext(SAVE_PATH)[0] + model_name + '/metrics.txt'
+
+# Write the norms and distances to a text file
+with open(output_file_path, 'w') as f:
+    for i, seed in enumerate(seeds):
+        f.write(f"Seed {seed}:\n")
+        f.write(f"Norms: {norms_list[i]}\n")
+        f.write(f"Min BC: {bcs_min_list[i]}\n")
+        f.write("\n")
+
+    # TODO: print how many were safe per gamma (if MIN BC >= 0, safe. otherwise, unsafe)
+print(f"Results saved to {output_file_path}")
+
+
+# Plot the minimum distances for each gamma value
+fig, axs = plt.subplots(1, 3, figsize=(18, 6), sharey=True)
+gamma_values = [0, 1, 2]  # Assumed gamma values for labeling, adjust as needed
+
+if opt.plot:
+    for idx, ax in enumerate(axs):
+        ax.set_title(f'Gamma = {gamma_values[idx]}')
+        ax.set_xlabel('Time Step')
+        ax.set_ylabel('Minimum Distance')
+        
+        # Plot each rollout in the corresponding gamma plot
+        for seed_idx, seed_bcs in enumerate(bcs_list):
+            rollout_data = seed_bcs[idx].cpu().numpy().flatten()  # Get the rollout data for the current gamma
+            ax.plot(rollout_data, label=f'Seed {seeds[seed_idx]}')
+        
+        # ax.legend()
+        ax.grid(True)
+
+    # Save the plot with subplots showing minimum distances by gamma
+    plot_output_path = os.path.splitext(SAVE_PATH)[0] + model_name + '/min_dist_by_gamma.png'
+    plt.savefig(plot_output_path, format='png', dpi=300)
+    plt.close(fig)
+
+    print(f"Min distance plot saved to {plot_output_path}")
+

@@ -54,22 +54,24 @@ def vf_eval(xys, plot_config, dynamics, model, gamma, time, x_resolution=100, y_
         model_input = dynamics.coord_to_input(coords.cuda())
         model_results = model({'coords': model_input})
         values = dynamics.io_to_value(model_results['model_in'].detach(), model_results['model_out'].squeeze(dim=-1).detach())
+        values_reshaped = values.detach().cpu().numpy().reshape(x_resolution, y_resolution)
+        # print(values_reshaped.shape)
 
-    return values
+    return values, values_reshaped
 
 
-def vf_safe(xys, vf):
-    safe_indices = torch.where(vf >= 0)[0].to(xys.device) # Non-negative values indicate safe areas
-    print(safe_indices)
+def vf_safe(xys, vf_reshaped):
+    safe_indices = np.where(vf_reshaped.T <= 0) # TODO: get indices where this is true
+    print("si", safe_indices[0].shape)
     safe_points = xys[safe_indices]
+    print(safe_points)
 
     return safe_points
 
 
-def initialize_states(xys, vf, state_dim, theta, gamma):
-    zls = vf_safe(xys, vf)
+def initialize_states(xys, vf_reshaped, state_dim, theta, gamma):
+    zls = vf_safe(xys, vf_reshaped)
     initial_states = zls[0]
-    print(initial_states)
 
     # initial_states = torch.zeros(state_dim)
     
@@ -138,18 +140,15 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
         
         
         for i, time in enumerate(times):
-            values = vf_eval(xys, plot_config, dynamics, model, gamma, time)
+            values, values_reshaped = vf_eval(xys, plot_config, dynamics, model, gamma, time)
 
             initial_states = initialize_states(
                 xys,
-                values,
+                values_reshaped,
                 state_dim=dynamics.state_dim, 
                 theta=torch.tensor(0), 
                 gamma=gamma
             )
-
-            # Reshape values for plotting
-            values_reshaped = values.cpu().numpy().reshape(x_resolution, y_resolution)
 
             # 2D Heatmap Plot
             ax_2d = fig_2d.add_subplot(len(times)+1, len(gammas), (j+1) + i * len(gammas))

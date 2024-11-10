@@ -57,8 +57,8 @@ class Experiment(ABC):
 
             # get the states at t=k
             traj_coords = torch.cat((traj_times.unsqueeze(-1), state_trajs[:, k]), dim=-1)
-
-            traj_policy_results = policy({'coords': dynamics.coord_to_input(traj_coords.cuda())}) # learned costate/gradient
+            # TODO: move all to cuda 
+            traj_policy_results = policy({'coords': dynamics.coord_to_input(traj_coords.cuda())}) # learned costate/gradient 
             traj_dvs = dynamics.io_to_dv(traj_policy_results['model_in'], traj_policy_results['model_out'].squeeze(dim=-1)).detach()
 
             # optimal control based on the policy's output
@@ -183,7 +183,9 @@ class Experiment(ABC):
             for j in range(len(zs)):
                 coords = torch.zeros(x_resolution*y_resolution, self.dataset.dynamics.state_dim + 1)
                 coords[:, 0] = times[i]
+                # coords[:, 1:] = torch.tensor(plot_config['state_slices'])
                 coords[:, 1:-1] = torch.tensor(plot_config['state_slices'])
+
                 coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
                 coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
                 coords[:, 1 + plot_config['z_axis_idx']] = zs[j]
@@ -353,6 +355,8 @@ class Experiment(ABC):
                     dirichlet_masks = gt['dirichlet_masks']
 
                     if self.dataset.dynamics.loss_type == 'brt_hjivi':
+                        # losses = loss_fn(states, values, dvs[..., 0], dvs[..., 1:], boundary_values, dirichlet_masks, model_results['model_out']) 
+                        # print(states.shape)
                         losses = loss_fn(states, values, dvs[..., 0], dvs[..., 1:], boundary_values, dirichlet_masks, model_results['model_out'])
                     elif self.dataset.dynamics.loss_type == 'brat_hjivi':
                         losses = loss_fn(states, values, dvs[..., 0], dvs[..., 1:], boundary_values, reach_values, avoid_values, dirichlet_masks, model_results['model_out'])

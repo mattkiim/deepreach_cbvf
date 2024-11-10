@@ -406,14 +406,13 @@ class Dubins3D_P(Dynamics):
     
     # take the state (+1 from before)
     # index the position in the state where gamma is (put it last)
-    def hamiltonian(self, state, dvds, value, maxGamma):
-        gamma = state[..., 3] * maxGamma
+    def hamiltonian(self, state, dvds):
         if self.freeze_model:
             raise NotImplementedError
         if self.set_mode == 'reach':
             return self.velocity*(torch.cos(state[..., 2]) * dvds[..., 0] + torch.sin(state[..., 2]) * dvds[..., 1]) - self.omega_max * torch.abs(dvds[..., 2]) 
         elif self.set_mode == 'avoid':
-            return self.velocity*(torch.cos(state[..., 2]) * dvds[..., 0] + torch.sin(state[..., 2]) * dvds[..., 1]) + self.omega_max * torch.abs(dvds[..., 2]) + gamma * value
+            return self.velocity*(torch.cos(state[..., 2]) * dvds[..., 0] + torch.sin(state[..., 2]) * dvds[..., 1]) + self.omega_max * torch.abs(dvds[..., 2])
 
     def optimal_control(self, state, dvds):
         if self.set_mode == 'reach':
@@ -1311,7 +1310,7 @@ class MultiVehicleCollision_P(Dynamics):
     # \dot x    = v \cos \theta
     # \dot y    = v \sin \theta
     # \dot \theta = u
-    def dsdt(self, state, control, disturbance):
+    def dsdt(self, state, control):
         dsdt = torch.zeros_like(state)
         dsdt[..., 0] = self.velocity*torch.cos(state[..., 6])
         dsdt[..., 1] = self.velocity*torch.sin(state[..., 6])
@@ -1344,13 +1343,12 @@ class MultiVehicleCollision_P(Dynamics):
     def cost_fn(self, state_traj):
         return torch.min(self.boundary_fn(state_traj), dim=-1).values
     
-    def hamiltonian(self, state, dvds, value, maxGamma):
-        gamma = state[..., 3] * maxGamma # TODO: 1. verify 3 is gamma and 2. make this dynamic
+    def hamiltonian(self, state, dvds):
         # Compute the hamiltonian for the ego vehicle
         ham = self.velocity*(torch.cos(state[..., 6]) * dvds[..., 0] + torch.sin(state[..., 6]) * dvds[..., 1]) + self.omega_max * torch.abs(dvds[..., 6])
         # Hamiltonian effect due to other vehicles
         ham += self.velocity*(torch.cos(state[..., 7]) * dvds[..., 2] + torch.sin(state[..., 7]) * dvds[..., 3]) + self.omega_max * torch.abs(dvds[..., 7])
-        ham += self.velocity*(torch.cos(state[..., 8]) * dvds[..., 4] + torch.sin(state[..., 8]) * dvds[..., 5]) + self.omega_max * torch.abs(dvds[..., 8]) + gamma * value
+        ham += self.velocity*(torch.cos(state[..., 8]) * dvds[..., 4] + torch.sin(state[..., 8]) * dvds[..., 5]) + self.omega_max * torch.abs(dvds[..., 8])
         return ham
 
     def optimal_control(self, state, dvds):

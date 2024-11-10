@@ -58,7 +58,7 @@ if (mode == 'all') or (mode == 'train'):
 
     # model options
     p.add_argument('--model', type=str, default='sine', required=False, choices=['sine', 'tanh', 'sigmoid', 'relu'], help='Type of model to evaluate, default is sine.')
-    p.add_argument('--model_mode', type=str, default='mlp', required=False, choices=['mlp', 'rbf', 'pinn'], help='Whether to use uniform velocity parameter')
+    p.add_argument('--model_mode', type=str, default='mlp', required=False, choices=['mlp', 'rbf', 'pinn'], help='Whether to use  uniform velocity parameter')
     p.add_argument('--num_hl', type=int, default=3, required=False, help='The number of hidden layers')
     p.add_argument('--num_nl', type=int, default=512, required=False, help='Number of neurons per hidden layer.')
     p.add_argument('--deepreach_model', type=str, default='exact', required=False, choices=['exact', 'diff', 'vanilla'], help='deepreach model')
