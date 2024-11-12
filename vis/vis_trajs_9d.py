@@ -19,6 +19,9 @@ p.add_argument('-r', '--radius', type=float, default=1.0, required=True, help='R
 p.add_argument('-p', '--plot', default=False, required=True, help='Plot (T) or (F).')
 p.add_argument('-ss', '--seeds', type=int, default=-1, required=False, help='Seeds.')
 p.add_argument('-s', '--seed', type=int, default=0, required=False, help='Seed.')
+p.add_argument('-t', '--time', type=int, default=1, required=False, help='Time.')
+p.add_argument('-g', '--gamma', type=float, default=1, required=False, help='Gamma.')
+
 opt = p.parse_args()
 
 # Initialize the dynamics object
@@ -26,7 +29,9 @@ dynamics = MultiVehicleCollision_P()
 
 # Load the trained model
 epochs = 500000
-model_name = "mvc_t3_g1"
+tMax = opt.time
+gammaMax = opt.gamma
+model_name = f"mvc_t{tMax}_g{gammaMax}"
 model_path = f"/home/ubuntu/deepreach_cbvf/runs/{model_name}/training/checkpoints/model_epoch_{epochs}.pth"
 checkpoint = torch.load(model_path)
 
@@ -204,8 +209,20 @@ def boundary_fn(state):
 
     min_distance = torch.min(torch.min(distance_12, distance_13), distance_23) - 0.25
 
-    return min_distance, torch.min(min_distance)
+    return min_distance
 
+def neural_boundary_fn(state, tMax):
+        batch_size, time_steps = state.shape[:-1]
+
+        time_coords = torch.linspace(0, tMax, steps=time_steps).view(1, time_steps, 1)  # Shape: (1, time_steps, 1)
+        time_coords = time_coords.expand(batch_size, time_steps, 1)
+        coords = torch.cat((time_coords, state), dim=-1)
+
+        model_input = dynamics.coord_to_input(coords.cuda())
+        model_results = model({'coords': model_input})
+        values = dynamics.io_to_value(model_results['model_in'].detach(),
+                                        model_results['model_out'].squeeze(dim=-1).detach())
+        return values
 
 def visualize_value_function(model, dynamics, save_path, radius=1, x_resolution=100, y_resolution=100, z_resolution=3, time_resolution=3, seed=0, plot=False):
     ax_size = 2 * np.ceil(radius)
@@ -216,34 +233,28 @@ def visualize_value_function(model, dynamics, save_path, radius=1, x_resolution=
     y_min, y_max = state_test_range[plot_config['y_axis_idx']]
     z_min, z_max = state_test_range[plot_config['z_axis_idx']]
     
-    times = torch.linspace(0, 2, time_resolution)
+    times = torch.linspace(0, tMax, time_resolution)
     xs = torch.linspace(x_min, x_max, x_resolution)
     ys = torch.linspace(y_min, y_max, y_resolution)
     zs = torch.linspace(z_min, z_max, z_resolution) # theta
-    gammas = torch.linspace(0, 2, z_resolution)  # gamma
+    gammas = torch.linspace(0, gammaMax, z_resolution)  # gamma
     xys = torch.cartesian_prod(xs, ys)
     
     
     fig_2d = plt.figure(figsize=(5 * len(times), 5 * len(zs)))
-    car_image_path = 'car.png'  # Replace with the path to your car image
+    car_image_path = 'car.png'
     car_image = plt.imread(car_image_path)
 
-    bcs_min = []
-    bcs = []
+    true_bcs_min = []
+    true_bcs = []
+
+    neur_bcs_min = []
+    neur_bcs = []
 
 
     for i, time in enumerate(times):
-        temp_trajs = np.zeros((1, 1, 10))
         norms = []
         for j, gamma in enumerate(gammas):
-
-            coords = torch.zeros(x_resolution * y_resolution, dynamics.state_dim + 1)
-            coords[:, 0] = time
-            coords[:, 1:-1] = torch.tensor(plot_config['state_slices'])
-            coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
-            coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
-            coords[:, -1] = gamma  # Assign gamma as the last value
-
             if plot:
                 ax_2d = fig_2d.add_subplot(len(times)+1, len(gammas), (j+1) + i * len(gammas))
                 ax_2d.set_aspect('equal')
@@ -281,21 +292,22 @@ def visualize_value_function(model, dynamics, save_path, radius=1, x_resolution=
                 initial_states=initial_states.unsqueeze(0) 
             )
 
-            # if np.array_equal(state_trajs[:, :, 9], temp_trajs[:, :, 9]): print("wtf")
-            temp_trajs = state_trajs
-
             t1 = state_trajs[:, :, :3]
             t2 = state_trajs[:, :, 3:6]
             t3 = state_trajs[:, :, 6:9]
             norm = np.linalg.norm(t1 - t2) + np.linalg.norm(t2 - t3) + np.linalg.norm(t1 - t3)
             norms.append(norm)
 
-            # bc, bc_min = boundary_fn(state_trajs)
-            bc = dynamics.boundary_fn(state_trajs) # TODO: rollout and plug into the actual model to get neural-approx. boundary condition
+            bc_true = boundary_fn(state_trajs) # TODO: rollout and plug into the actual model to get neural-approx. boundary condition
+            bc_neur = neural_boundary_fn(state_trajs, times[i])
+            # print(bc_true, bc_neur)
+            
             if i == len(times)-1: 
-                bcs_min.append(torch.min(bc).item())
-                bcs.append(bc)
+                true_bcs_min.append(torch.min(bc_true).item())
+                true_bcs.append(bc_true)
 
+                neur_bcs_min.append(torch.min(bc_neur).item())
+                neur_bcs.append(bc_neur)
             # Plot trajectories
             if plot: 
                 for k in range(state_trajs.shape[0]):
@@ -307,67 +319,77 @@ def visualize_value_function(model, dynamics, save_path, radius=1, x_resolution=
                         ax_2d.scatter(x_traj[-1], y_traj[-1], color='red', s=50, zorder=5, label='End' if k == 0 else "")
 
     # Save plots
-    save_path_2d = os.path.splitext(save_path)[0] + model_name + '/value_function_trajs.png'
+    save_path_2d = os.path.splitext(save_path)[0] + model_name + f'/plots/trajs/traj_seed_{seed}.png' # TODO remove all of these paths and just keep one
     os.makedirs(os.path.dirname(save_path_2d), exist_ok=True)
     
     fig_2d.savefig(save_path_2d)
     plt.close(fig_2d)
 
-    return norms, bcs_min, bcs
+    return norms, true_bcs_min, true_bcs, neur_bcs_min, neur_bcs, gammas
 
-# Call the visualization function
+
 
 seeds = None
 if opt.seeds == -1: seeds = [opt.seed]
 else: seeds = range(opt.seeds)
 
 norms_list = []
-bcs_min_list = []
-bcs_list = []
+
+true_bcs_min_list = []
+true_bcs_list = []
+
+neur_bcs_min_list = []
+neur_bcs_list = []
 
 SAVE_PATH = '/home/ubuntu/deepreach_cbvf/runs/'
 
 for seed in seeds: 
-    norms, bcs_min, bcs = visualize_value_function(model, dynamics, radius=opt.radius, save_path=SAVE_PATH, seed=seed, plot=opt.plot)
+    norms, true_bcs_min, true_bcs, neur_bcs_min, neur_bcs, gammas = visualize_value_function(model, dynamics, radius=opt.radius, save_path=SAVE_PATH, seed=seed, plot=opt.plot)
     norms_list.append(norms)
-    bcs_min_list.append(bcs_min)
-    bcs_list.append(bcs)
+
+    true_bcs_min_list.append(true_bcs_min)
+    true_bcs_list.append(true_bcs)
+
+    neur_bcs_min_list.append(neur_bcs_min)
+    neur_bcs_list.append(neur_bcs)
+
+output_file_path = os.path.splitext(SAVE_PATH)[0] + model_name + '/plots/metrics.txt'
 
 
-output_file_path = os.path.splitext(SAVE_PATH)[0] + model_name + '/metrics.txt'
 
 # Write the norms and distances to a text file
 with open(output_file_path, 'w') as f:
     for i, seed in enumerate(seeds):
+
         f.write(f"Seed {seed}:\n")
         f.write(f"Norms: {norms_list[i]}\n")
-        f.write(f"Min BC: {bcs_min_list[i]}\n")
+        f.write(f"True Min BC: {true_bcs_min_list[i]}\n")
+        f.write(f"Neur Min BC: {neur_bcs_min_list[i]}\n")
         f.write("\n")
-
     # TODO: print how many were safe per gamma (if MIN BC >= 0, safe. otherwise, unsafe)
+
 print(f"Results saved to {output_file_path}")
 
 
-# Plot the minimum distances for each gamma value
+# Plot the minimum approx distances for each gamma value
 fig, axs = plt.subplots(1, 3, figsize=(18, 6), sharey=True)
-gamma_values = [0, 1, 2]  # Assumed gamma values for labeling, adjust as needed
+  # Assumed gamma values for labeling, adjust as needed
 
 if opt.plot:
     for idx, ax in enumerate(axs):
-        ax.set_title(f'Gamma = {gamma_values[idx]}')
+        ax.set_title(f'Gamma = {gammas[idx]}')
         ax.set_xlabel('Time Step')
         ax.set_ylabel('Minimum Distance')
         
         # Plot each rollout in the corresponding gamma plot
-        for seed_idx, seed_bcs in enumerate(bcs_list):
+        for seed_idx, seed_bcs in enumerate(neur_bcs_list):
             rollout_data = seed_bcs[idx].cpu().numpy().flatten()  # Get the rollout data for the current gamma
             ax.plot(rollout_data, label=f'Seed {seeds[seed_idx]}')
         
-        # ax.legend()
         ax.grid(True)
 
     # Save the plot with subplots showing minimum distances by gamma
-    plot_output_path = os.path.splitext(SAVE_PATH)[0] + model_name + '/min_dist_by_gamma.png'
+    plot_output_path = os.path.splitext(SAVE_PATH)[0] + model_name + '/plots/min_dist_by_gamma.png'
     plt.savefig(plot_output_path, format='png', dpi=300)
     plt.close(fig)
 

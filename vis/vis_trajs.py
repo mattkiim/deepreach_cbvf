@@ -12,6 +12,10 @@ from dynamics.dynamics import Dubins3D_P
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 import matplotlib.transforms as transforms
 
+seed = 1
+torch.manual_seed(seed)
+np.random.seed(seed)
+
 # Initialize the dynamics object
 dynamics = Dubins3D_P(goalR=0.25, velocity=1.0, omega_max=3.14, angle_alpha_factor=1.2, set_mode='avoid', freeze_model=False)
 
@@ -35,47 +39,53 @@ model.load_state_dict(checkpoint['model'])
 model = model.cuda()  # Move model to GPU
 model.eval()
 
-# Function to initialize states with general displacement
-def initialize_states_with_general_displacement(state_dim, theta, displacement, gamma):
-    initial_states = torch.zeros(state_dim)
-    
-    x_start = -displacement * torch.cos(theta)  # x-coordinate displaced opposite to the orientation
-    y_start = -displacement * torch.sin(theta)  # y-coordinate displaced opposite to the orientation
+def vf_eval(xys, plot_config, dynamics, model, gamma, time, x_resolution=100, y_resolution=100):
 
-    initial_states[0] = x_start  # x position
-    initial_states[1] = y_start  # y position
-    initial_states[2] = theta  # orientation angle
-    initial_states[3] = gamma
+    coords = torch.zeros(x_resolution * y_resolution, dynamics.state_dim + 1)
+    coords[:, 0] = time
+    coords[:, 1:-1] = torch.tensor(plot_config['state_slices'])
+    coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
+    coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
+    coords[:, 1 + plot_config['z_axis_idx']] = 0 # angle
+    coords[:, -1] = gamma  # Assign gamma as the last value
+
+    # Evaluate the value function
+    with torch.no_grad():
+        model_input = dynamics.coord_to_input(coords.cuda())
+        model_results = model({'coords': model_input})
+        values = dynamics.io_to_value(model_results['model_in'].detach(), model_results['model_out'].squeeze(dim=-1).detach())
+        values_reshaped = values.detach().cpu().numpy().reshape(x_resolution, y_resolution)
+        # print(values_reshaped.shape)
+
+    return values, values_reshaped
+
+
+def vf_safe(xys, vf_reshaped):
+    safe_indices = np.where(vf_reshaped.T <= 0) # TODO: get indices where this is true
+    print("si", safe_indices[0].shape)
+    safe_points = xys[safe_indices]
+    print(safe_points)
+
+    return safe_points
+
+
+def initialize_states(xys, vf_reshaped, state_dim, theta, gamma):
+    zls = vf_safe(xys, vf_reshaped)
+    initial_states = zls[0]
+
+    # initial_states = torch.zeros(state_dim)
+    
+    # x_start = torch.rand(1).item() * 2 - 1 
+    # y_start = torch.rand(1).item() * 2 - 1 
+    # theta = torch.rand(1).item() * 2 * torch.pi 
+
+    # initial_states[0] = x_start
+    # initial_states[1] = y_start
+    # initial_states[2] = theta
+
+    # initial_states[3] = gamma
 
     return initial_states
-
-# def sample_initial_states():
-#     return initial_states
-
-def sample_boundary(state_dim, model, gamma, epsilon=0.1, num_ics=1000):
-    value = 100
-    while value < -epsilon or value > epsilon:
-        with torch.no_grad():
-            time = 1
-            x = torch.rand(1)
-            y = torch.rand(1)
-            theta = torch.rand(1)
-            
-            coords = coords = torch.zeros(1, state_dim + 1)
-            coords[:, 0] = time
-            coords[:, 1] = x
-            coords[:, 2] = y
-            coords[:, 3] = theta
-            coords[:, 4] = gamma
-
-            model_input = dynamics.coord_to_input(coords.cuda())
-            model_results = model({'coords': model_input})
-            values = dynamics.io_to_value(model_results['model_in'].detach(),
-                                            model_results['model_out'].squeeze(dim=-1).detach())
-            print(values)
-            value = values.item()
-            print(value)
-    return value
 
 # Function to rollout trajectories
 def trajectory_rollout(policy, dynamics, tMin, tMax, dt, scenario_batch_size, initial_states):
@@ -125,29 +135,20 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
     car_image_path = 'car.png'  # Replace with the path to your car image
     car_image = plt.imread(car_image_path)
 
-    for i, time in enumerate(times):
-        for j, gamma in enumerate(gammas):
-            coords = torch.zeros(x_resolution * y_resolution, dynamics.state_dim + 1)
-            coords[:, 0] = time
-            coords[:, 1:-1] = torch.tensor(plot_config['state_slices'])
-            coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
-            coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
-            coords[:, 1 + plot_config['z_axis_idx']] = 0 # angle
-            coords[:, -1] = gamma  # Assign gamma as the last value
+    for j, gamma in enumerate(gammas):
+        initial_state_seed = torch.rand(1).item()
+        
+        
+        for i, time in enumerate(times):
+            values, values_reshaped = vf_eval(xys, plot_config, dynamics, model, gamma, time)
 
-            with torch.no_grad():
-                model_input = dynamics.coord_to_input(coords.cuda())
-                model_results = model({'coords': model_input})
-                values = dynamics.io_to_value(model_results['model_in'].detach(),
-                                              model_results['model_out'].squeeze(dim=-1).detach())
-                
-                # print(model_input.shape)
-                # print(values.shape)
-                # print(f"Value range: min = {values.min().item()}, max = {values.max().item()}")
-
-
-            # Reshape values for plotting
-            values_reshaped = values.cpu().numpy().reshape(x_resolution, y_resolution)
+            initial_states = initialize_states(
+                xys,
+                values_reshaped,
+                state_dim=dynamics.state_dim, 
+                theta=torch.tensor(0), 
+                gamma=gamma
+            )
 
             # 2D Heatmap Plot
             ax_2d = fig_2d.add_subplot(len(times)+1, len(gammas), (j+1) + i * len(gammas))
@@ -157,35 +158,16 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
 
             ax_2d.contour(xs, ys, values_reshaped.T, levels=[0], colors='black')
 
-
-            # Initialize states      
-            # initial_states = initialize_states_with_general_displacement(
-            #     state_dim=dynamics.state_dim, 
-            #     theta=torch.tensor(0),  # TODO: theta.item() to make it dynamic
-            #     displacement=0.75,
-            #     gamma=gamma
-            # )
-
-            initial_states = sample_boundary(
-                dynamics.state_dim,
-                model, 
-                gamma
-            )
-            quit()
-            
             # Rollout the trajectories
             state_trajs, ctrl_trajs = trajectory_rollout(
                 policy=model,
                 dynamics=dynamics,
                 tMin=0,
                 tMax=times[i],
-                dt=(max(times) / epochs) * 1000,
+                dt=0.01,
                 scenario_batch_size=1,
                 initial_states=initial_states.unsqueeze(0) 
             )
-            # if time == 1:
-                # np.save(f"dr_traj_gamma_{gamma}.npy", state_trajs)
-                # if gamma == 1: quit()
             
             # Plot the trajectories
             for k in range(state_trajs.shape[0]):
@@ -214,7 +196,7 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
 
 
     # Save plots
-    save_path_2d = os.path.splitext(save_path)[0] + model_name + '/value_function_trajs.png'
+    save_path_2d = os.path.splitext(save_path)[0] + model_name + '/many_boundary_trajectories.png'
     os.makedirs(os.path.dirname(save_path_2d), exist_ok=True)
     
     fig_2d.savefig(save_path_2d)

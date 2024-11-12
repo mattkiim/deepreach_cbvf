@@ -65,8 +65,12 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
             coords = torch.zeros(x_resolution * y_resolution, dynamics.state_dim + 1)
             coords[:, 0] = time
             coords[:, 1:-1] = torch.tensor(plot_config['state_slices'])
-            coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
-            coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
+            coords[:, 1] = xys[:, 0] # 1
+            coords[:, 2] = xys[:, 1]
+            # coords[:, 3] = xys[:, 0] # 2
+            # coords[:, 4] = xys[:, 1]
+            # coords[:, 5] = xys[:, 0] # 3
+            # coords[:, 6] = xys[:, 1]
             coords[:, -1] = gamma  # Assign gamma as the last value
 
             with torch.no_grad():
