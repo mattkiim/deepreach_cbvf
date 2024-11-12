@@ -49,6 +49,34 @@ def initialize_states_with_general_displacement(state_dim, theta, displacement, 
 
     return initial_states
 
+# def sample_initial_states():
+#     return initial_states
+
+def sample_boundary(state_dim, model, gamma, epsilon=0.1, num_ics=1000):
+    value = 100
+    while value < -epsilon or value > epsilon:
+        with torch.no_grad():
+            time = 1
+            x = torch.rand(1)
+            y = torch.rand(1)
+            theta = torch.rand(1)
+            
+            coords = coords = torch.zeros(1, state_dim + 1)
+            coords[:, 0] = time
+            coords[:, 1] = x
+            coords[:, 2] = y
+            coords[:, 3] = theta
+            coords[:, 4] = gamma
+
+            model_input = dynamics.coord_to_input(coords.cuda())
+            model_results = model({'coords': model_input})
+            values = dynamics.io_to_value(model_results['model_in'].detach(),
+                                            model_results['model_out'].squeeze(dim=-1).detach())
+            print(values)
+            value = values.item()
+            print(value)
+    return value
+
 # Function to rollout trajectories
 def trajectory_rollout(policy, dynamics, tMin, tMax, dt, scenario_batch_size, initial_states):
     state_trajs = torch.zeros(scenario_batch_size, int((tMax - tMin) / dt) + 1, dynamics.state_dim)
@@ -113,7 +141,9 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
                 values = dynamics.io_to_value(model_results['model_in'].detach(),
                                               model_results['model_out'].squeeze(dim=-1).detach())
                 
-                print(f"Value range: min = {values.min().item()}, max = {values.max().item()}")
+                # print(model_input.shape)
+                # print(values.shape)
+                # print(f"Value range: min = {values.min().item()}, max = {values.max().item()}")
 
 
             # Reshape values for plotting
@@ -129,12 +159,19 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
 
 
             # Initialize states      
-            initial_states = initialize_states_with_general_displacement(
-                state_dim=dynamics.state_dim, 
-                theta=torch.tensor(0),  # TODO: theta.item() to make it dynamic
-                displacement=0.75,
-                gamma=gamma
+            # initial_states = initialize_states_with_general_displacement(
+            #     state_dim=dynamics.state_dim, 
+            #     theta=torch.tensor(0),  # TODO: theta.item() to make it dynamic
+            #     displacement=0.75,
+            #     gamma=gamma
+            # )
+
+            initial_states = sample_boundary(
+                dynamics.state_dim,
+                model, 
+                gamma
             )
+            quit()
             
             # Rollout the trajectories
             state_trajs, ctrl_trajs = trajectory_rollout(
@@ -159,21 +196,21 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
                 plt.scatter(x_traj[-1], y_traj[-1], color='red', s=50, zorder=5, label='End' if k == 0 else "")
                 
 
-                start_theta = state_trajs[k, 0, 2].item()  # Assuming theta is at index 2
-                end_theta = state_trajs[k, -1, 2].item()
+                # start_theta = state_trajs[k, 0, 2].item()  # Assuming theta is at index 2
+                # end_theta = state_trajs[k, -1, 2].item()
 
-                imagebox_start = OffsetImage(car_image, zoom=0.005)  # Adjust zoom for size
-                imagebox_end = OffsetImage(car_image, zoom=0.005)    # Adjust zoom for size
+                # imagebox_start = OffsetImage(car_image, zoom=0.005)  # Adjust zoom for size
+                # imagebox_end = OffsetImage(car_image, zoom=0.005)    # Adjust zoom for size
 
-                ab_start = AnnotationBbox(imagebox_start, (x_traj[0], y_traj[0]), frameon=False)
-                ab_end = AnnotationBbox(imagebox_end, (x_traj[-1], y_traj[-1]), frameon=False)
+                # ab_start = AnnotationBbox(imagebox_start, (x_traj[0], y_traj[0]), frameon=False)
+                # ab_end = AnnotationBbox(imagebox_end, (x_traj[-1], y_traj[-1]), frameon=False)
 
-                ab_start.set_transform(ab_start.get_transform() + transforms.Affine2D().rotate_deg(np.degrees(start_theta)))
-                ab_end.set_transform(ab_end.get_transform() + transforms.Affine2D().rotate_deg(np.degrees(end_theta)))
+                # ab_start.set_transform(ab_start.get_transform() + transforms.Affine2D().rotate_deg(np.degrees(start_theta)))
+                # ab_end.set_transform(ab_end.get_transform() + transforms.Affine2D().rotate_deg(np.degrees(end_theta)))
 
-                # Add the images to the plot
-                ax_2d.add_artist(ab_start)
-                ax_2d.add_artist(ab_end)
+                # # Add the images to the plot
+                # ax_2d.add_artist(ab_start)
+                # ax_2d.add_artist(ab_end)
 
 
     # Save plots

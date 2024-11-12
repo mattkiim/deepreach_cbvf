@@ -291,7 +291,7 @@ def visualize_value_function(model, dynamics, save_path, radius=1, x_resolution=
             norms.append(norm)
 
             # bc, bc_min = boundary_fn(state_trajs)
-            bc = dynamics.boundary_fn(state_trajs)
+            bc = dynamics.boundary_fn(state_trajs) # TODO: rollout and plug into the actual model to get neural-approx. boundary condition
             if i == len(times)-1: 
                 bcs_min.append(torch.min(bc).item())
                 bcs.append(bc)

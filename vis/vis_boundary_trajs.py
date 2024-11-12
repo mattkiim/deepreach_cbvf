@@ -196,7 +196,7 @@ def visualize_value_function(model, dynamics, save_path, x_resolution=100, y_res
 
 
     # Save plots
-    save_path_2d = os.path.splitext(save_path)[0] + model_name + '/many_trajectories.png'
+    save_path_2d = os.path.splitext(save_path)[0] + model_name + '/many_boundary_trajectories.png'
     os.makedirs(os.path.dirname(save_path_2d), exist_ok=True)
     
     fig_2d.savefig(save_path_2d)

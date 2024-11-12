@@ -20,8 +20,8 @@ dynamics = MultiVehicleCollision_P()
 
 
 # Load the trained model
-epochs = 300000
-model_name = "mvc_t1_g1_sean_1"
+epochs = 500000
+model_name = "mvc_t2_g1"
 model_path = f"/home/ubuntu/deepreach_cbvf/runs/{model_name}/training/checkpoints/model_epoch_{epochs}.pth"
 checkpoint = torch.load(model_path)
 

@@ -1,23 +1,32 @@
 import sys
 import os
+sys.path.append(os.path.abspath(".."))
+
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from tqdm import tqdm
 from utils import modules, dataio, losses
-from dynamics.dynamics import Dubins3D_P
+from dynamics.dynamics import Dubins3D_P, MultiVehicleCollision_P
 import matplotlib.gridspec as gridspec
 
 # Close all figures
 plt.close('all')
 
 # Initialize the dynamics object
-dynamics = Dubins3D_P(goalR=0.25, velocity=1.0, omega_max=3.14, angle_alpha_factor=1.2, set_mode='avoid', freeze_model=False)
+# dynamics = Dubins3D_P(goalR=0.25, velocity=1.0, omega_max=3.14, angle_alpha_factor=1.2, set_mode='avoid', freeze_model=False)
+dynamics = MultiVehicleCollision_P()
+
 
 # Load the trained model
-epochs = 280000
-model_path = f"/home/ubuntu/deepreach_cbvf/runs/dubins3d_t1_g1_2/training/checkpoints/model_epoch_{epochs}.pth"
+# epochs = 280000
+# model_path = f"/home/ubuntu/deepreach_cbvf/runs/dubins3d_t1_g1_2/training/checkpoints/model_epoch_{epochs}.pth"
+# checkpoint = torch.load(model_path)
+
+epochs = 500000
+model_name = "mvc_t2_g1"
+model_path = f"/home/ubuntu/deepreach_cbvf/runs/{model_name}/training/checkpoints/model_epoch_{epochs}.pth"
 checkpoint = torch.load(model_path)
 
 # Instantiate the model
