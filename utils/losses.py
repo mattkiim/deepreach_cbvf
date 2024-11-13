@@ -10,8 +10,8 @@ def init_brt_hjivi_loss(dynamics, minWith, dirichlet_loss_divisor, maxGamma):
             ham = dynamics.hamiltonian(state, dvds)
             if minWith == 'zero':
                 ham = torch.clamp(ham, max=0.0)
-
-            diff_constraint_hom = dvdt - ham - state[..., 3] * maxGamma * value
+            
+            diff_constraint_hom = dvdt - ham - state[..., -1] * maxGamma * value
             if minWith == 'target':
                 diff_constraint_hom = torch.max(
                     diff_constraint_hom, value - boundary_value)
