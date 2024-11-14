@@ -16,11 +16,11 @@ import configargparse
 
 p = configargparse.ArgumentParser()
 p.add_argument('-r', '--radius', type=float, default=1.0, required=True, help='Radius of circle.')
-p.add_argument('-p', '--plot', default=False, required=True, help='Plot (T) or (F).')
+p.add_argument('-p', '--plot', type=bool, default=False, required=True, help='Plot (T) or (F).')
 p.add_argument('-ss', '--seeds', type=int, default=-1, required=False, help='Seeds.')
 p.add_argument('-s', '--seed', type=int, default=0, required=False, help='Seed.')
 p.add_argument('-t', '--time', type=int, default=1, required=False, help='Time.')
-p.add_argument('-g', '--gamma', type=float, default=1, required=False, help='Gamma.')
+p.add_argument('-g', '--gamma', type=int, default=1, required=False, help='Gamma.')
 
 opt = p.parse_args()
 
