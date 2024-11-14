@@ -184,7 +184,6 @@ class Experiment(ABC):
                 coords = torch.zeros(x_resolution*y_resolution, self.dataset.dynamics.state_dim + 1)
                 coords[:, 0] = times[i]
                 coords[:, 1:] = torch.tensor(plot_config['state_slices'])
-
                 coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
                 coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
                 coords[:, 1 + plot_config['z_axis_idx']] = zs[j]

@@ -277,8 +277,6 @@ class Dubins3D(Dynamics):
         super().__init__(
             loss_type='brt_hjivi', set_mode=set_mode,
             state_dim=3, input_dim=4, control_dim=1, disturbance_dim=0, 
-            # input dimension is currently sum of states + parameters + time (1)
-            # TODO: increase input dimension by 1 by parameterizing gamma
             state_mean=[0, 0, 0], 
             state_var=[1, 1, self.angle_alpha_factor*math.pi],
             value_mean=0.25, 
@@ -321,8 +319,6 @@ class Dubins3D(Dynamics):
     def cost_fn(self, state_traj):
         return torch.min(self.boundary_fn(state_traj), dim=-1).values
     
-    # take the state (+1 from before)
-    # index the position in the state where gamma is (put it last)
     def hamiltonian(self, state, dvds):
         if self.freeze_model:
             raise NotImplementedError
@@ -359,8 +355,6 @@ class Dubins3D_P(Dynamics):
         super().__init__(
             loss_type='brt_hjivi', set_mode=set_mode,
             state_dim=4, input_dim=5, control_dim=1, disturbance_dim=0, 
-            # input dimension is currently sum of states + parameters + time (1)
-            # TODO: increase input dimension by 1 by parameterizing gamma
             state_mean=[0, 0, 0, 0], 
             state_var=[1, 1, self.angle_alpha_factor*math.pi, 1],
             value_mean=0.25, 
@@ -404,8 +398,6 @@ class Dubins3D_P(Dynamics):
     def cost_fn(self, state_traj):
         return torch.min(self.boundary_fn(state_traj), dim=-1).values
     
-    # take the state (+1 from before)
-    # index the position in the state where gamma is (put it last)
     def hamiltonian(self, state, dvds):
         if self.freeze_model:
             raise NotImplementedError

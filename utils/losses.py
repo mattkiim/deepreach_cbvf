@@ -11,7 +11,7 @@ def init_brt_hjivi_loss(dynamics, minWith, dirichlet_loss_divisor, maxGamma):
             if minWith == 'zero':
                 ham = torch.clamp(ham, max=0.0)
 
-            diff_constraint_hom = dvdt - ham - state[..., 3] * maxGamma * value
+            diff_constraint_hom = dvdt - ham
             if minWith == 'target':
                 diff_constraint_hom = torch.max(
                     diff_constraint_hom, value - boundary_value)

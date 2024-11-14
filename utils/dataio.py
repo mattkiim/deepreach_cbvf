@@ -23,7 +23,6 @@ class ReachabilityDataset(Dataset):
     def __getitem__(self, idx):
         # Uniformly sample domain and include coordinates where source is non-zero
         model_states = torch.zeros(self.numpoints, self.dynamics.state_dim).uniform_(-1, 1)
-        model_states[:, -1] = torch.zeros(self.numpoints).uniform_(0, 1) # gamma term
 
         # Emphasize sampling for theta around -3.14 and 3.14
         # Assuming theta is the last dimension in model_states

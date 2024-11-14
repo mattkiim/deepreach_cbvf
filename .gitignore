@@ -133,3 +133,6 @@ wandb
 
 # experiment data
 runs
+
+vis
+vis copy
