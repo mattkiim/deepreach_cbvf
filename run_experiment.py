@@ -61,7 +61,7 @@ if (mode == 'all') or (mode == 'train'):
     p.add_argument('--model_mode', type=str, default='mlp', required=False, choices=['mlp', 'rbf', 'pinn'], help='Whether to use  uniform velocity parameter')
     p.add_argument('--num_hl', type=int, default=3, required=False, help='The number of hidden layers')
     p.add_argument('--num_nl', type=int, default=512, required=False, help='Number of neurons per hidden layer.')
-    p.add_argument('--deepreach_model', type=str, default='vanilla', required=False, choices=['exact', 'diff', 'vanilla'], help='deepreach model')
+    p.add_argument('--deepreach_model', type=str, default='exact', required=False, choices=['exact', 'diff', 'vanilla'], help='deepreach model')
 
     # training options
     p.add_argument('--epochs_til_ckpt', type=int, default=1000, help='Time interval in seconds until checkpoint is saved.')
@@ -95,7 +95,7 @@ if (mode == 'all') or (mode == 'train'):
 
     # loss options
     p.add_argument('--minWith', type=str, required=True, choices=['none', 'zero', 'target'], help='BRS vs BRT computation (typically should be using target for BRT)')
-    p.add_argument('--gamma', type=float, required=False, default=1.0, help='CBVF gamma term')
+    p.add_argument('--gamma', type=float, required=False, default=0.0, help='CBVF gamma term')
 
 
     # load dynamics_class choices dynamically from dynamics module

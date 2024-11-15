@@ -23,42 +23,26 @@ class ReachabilityDataset(Dataset):
     def __getitem__(self, idx):
         # Uniformly sample domain and include coordinates where source is non-zero
         model_states = torch.zeros(self.numpoints, self.dynamics.state_dim).uniform_(-1, 1)
-        model_states[:, -1] = torch.zeros(self.numpoints).uniform_(0, 1) # gamma term
-
-        # Emphasize sampling for theta around -3.14 and 3.14
-        # Assuming theta is the last dimension in model_states
-        # theta_samples = torch.cat([
-        #     torch.full((self.numpoints // 4, 1), -3.14),  # 25% samples at theta = -3.14
-        #     torch.zeros(self.numpoints // 2, 1).uniform_(-3.14, 3.14),  # 50% uniform samples
-        #     torch.full((self.numpoints // 4, 1), 3.14)  # 25% samples at theta = 3.14
-        # ], dim=0)
-
-        # # Replace the theta component in model_states with theta_samples
-        # model_states[:, -2] = theta_samples.squeeze()
 
         if self.num_target_samples > 0:
             target_state_samples = self.dynamics.sample_target_state(self.num_target_samples)
             model_states[-self.num_target_samples:] = self.dynamics.coord_to_input(
                 torch.cat((torch.zeros(self.num_target_samples, 1), target_state_samples), dim=-1)
-            )[:, 1:self.dynamics.state_dim+1]
+            )[:, 1:self.dynamics.state_dim+1] # TODO: delete this?
 
-        if self.pretrain:
-            # Only sample in time around the initial condition
-            times = torch.full((self.numpoints, 1), self.tMin)
-        else:
-            times = torch.ones(self.numpoints, 1)
-            times[-self.num_src_samples:, 0] = self.tMin
+        # model_coords = torch.cat((model_states), dim=1)
+        model_coords = model_states
+        # print(model_coords.shape)
 
-        model_coords = torch.cat((times, model_states), dim=1)
 
-        if self.dynamics.input_dim > self.dynamics.state_dim + 1:
-            model_coords = torch.cat((model_coords, torch.zeros(self.numpoints, self.dynamics.input_dim - self.dynamics.state_dim - 1)), dim=1)
+        # if self.dynamics.input_dim > self.dynamics.state_dim + 1:
+        #     model_coords = torch.cat((model_coords, torch.zeros(self.numpoints, self.dynamics.input_dim - self.dynamics.state_dim - 1)), dim=1)
 
-        boundary_values = self.dynamics.boundary_fn(self.dynamics.input_to_coord(model_coords)[..., 1:])
+        boundary_values = self.dynamics.boundary_fn(self.dynamics.input_to_coord(model_coords)[..., :])
 
         if self.dynamics.loss_type == 'brat_hjivi':
-            reach_values = self.dynamics.reach_fn(self.dynamics.input_to_coord(model_coords)[..., 1:])
-            avoid_values = self.dynamics.avoid_fn(self.dynamics.input_to_coord(model_coords)[..., 1:])
+            reach_values = self.dynamics.reach_fn(self.dynamics.input_to_coord(model_coords)[..., :])
+            avoid_values = self.dynamics.avoid_fn(self.dynamics.input_to_coord(model_coords)[..., :])
 
         if self.pretrain:
             dirichlet_masks = torch.ones(model_coords.shape[0]) > 0

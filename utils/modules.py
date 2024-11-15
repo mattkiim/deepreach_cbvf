@@ -133,7 +133,6 @@ class SingleBVPNet(nn.Module):
         # otherwise, .detach() removes input from the graph so grad cannot propagate back end-to-end, e.g., percept -> NN -> state estimation (input)
         coords_org = model_input['coords'].clone().detach().requires_grad_(True)
         coords = coords_org
-
         output = self.net(coords)
         return {'model_in': coords_org, 'model_out': output}
 

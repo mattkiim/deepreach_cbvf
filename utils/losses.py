@@ -33,6 +33,8 @@ def init_cbf_loss(dynamics, minWith, dirichlet_loss_divisor, maxGamma):
     def cbf_loss(state, value, dvdt, dvds, boundary_value, dirichlet_mask, output):
         # print(dvds)
         # exit()
+        # print("aa", state.shape) # why is it 2 here??
+
         if torch.all(dirichlet_mask):
             cbf_loss_value = torch.zeros(1, requires_grad=True)
         else:

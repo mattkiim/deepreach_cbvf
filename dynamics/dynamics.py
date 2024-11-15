@@ -42,21 +42,21 @@ class Dynamics(ABC):
     # convert model input to real coord
     def input_to_coord(self, input):
         coord = input.clone()
-        coord[..., 1:] = (input[..., 1:] * self.state_var.to(device=input.device)) + self.state_mean.to(device=input.device)
+        coord[..., :] = (input[..., :] * self.state_var.to(device=input.device)) + self.state_mean.to(device=input.device)
         return coord
 
     # convert real coord to model input
     def coord_to_input(self, coord):
         input = coord.clone()
-        input[..., 1:] = (coord[..., 1:] - self.state_mean.to(device=coord.device)) / self.state_var.to(device=coord.device)
+        input[..., :] = (coord[..., :] - self.state_mean.to(device=coord.device)) / self.state_var.to(device=coord.device)
         return input
 
     # convert model io to real value
     def io_to_value(self, input, output):
         if self.deepreach_model=="diff":
-            return (output * self.value_var / self.value_normto) + self.boundary_fn(self.input_to_coord(input)[..., 1:])
+            return (output * self.value_var / self.value_normto) + self.boundary_fn(self.input_to_coord(input)[..., :])
         elif self.deepreach_model=="exact":
-            return (output * input[..., 0] * self.value_var / self.value_normto) + self.boundary_fn(self.input_to_coord(input)[..., 1:])
+            return (output * input[..., 0] * self.value_var / self.value_normto) + self.boundary_fn(self.input_to_coord(input)[..., :])
         else:
             return (output * self.value_var / self.value_normto) + self.value_mean
 
@@ -67,8 +67,8 @@ class Dynamics(ABC):
         if self.deepreach_model=="diff":
             dvdt = (self.value_var / self.value_normto) * dodi[..., 0]
 
-            dvds_term1 = (self.value_var / self.value_normto / self.state_var.to(device=dodi.device)) * dodi[..., 1:]
-            state = self.input_to_coord(input)[..., 1:]
+            dvds_term1 = (self.value_var / self.value_normto / self.state_var.to(device=dodi.device)) * dodi[..., :]
+            state = self.input_to_coord(input)[..., :]
             dvds_term2 = diff_operators.jacobian(self.boundary_fn(state).unsqueeze(dim=-1), state)[0].squeeze(dim=-2)
             dvds = dvds_term1 + dvds_term2
         elif self.deepreach_model=="exact":
@@ -76,14 +76,14 @@ class Dynamics(ABC):
                 (input[..., 0]*dodi[..., 0] + output)
 
             dvds_term1 = (self.value_var / self.value_normto /
-                          self.state_var.to(device=dodi.device)) * dodi[..., 1:] * input[..., 0].unsqueeze(-1)
-            state = self.input_to_coord(input)[..., 1:]
+                          self.state_var.to(device=dodi.device)) * dodi[..., :] * input[..., 0].unsqueeze(-1)
+            state = self.input_to_coord(input)[..., :]
             dvds_term2 = diff_operators.jacobian(self.boundary_fn(
                 state).unsqueeze(dim=-1), state)[0].squeeze(dim=-2)
             dvds = dvds_term1 + dvds_term2
         else:
             dvdt = (self.value_var / self.value_normto) * dodi[..., 0]
-            dvds = (self.value_var / self.value_normto / self.state_var.to(device=dodi.device)) * dodi[..., 1:]
+            dvds = (self.value_var / self.value_normto / self.state_var.to(device=dodi.device)) * dodi[..., :]
         
         return torch.cat((dvdt.unsqueeze(dim=-1), dvds), dim=-1)
 
@@ -276,7 +276,7 @@ class Dubins3D(Dynamics):
         self.freeze_model = freeze_model
         super().__init__(
             loss_type='brt_hjivi', set_mode=set_mode,
-            state_dim=3, input_dim=4, control_dim=1, disturbance_dim=0, 
+            state_dim=3, input_dim=3, control_dim=1, disturbance_dim=0, 
             # input dimension is currently sum of states + parameters + time (1)
             # TODO: increase input dimension by 1 by parameterizing gamma
             state_mean=[0, 0, 0], 
@@ -324,6 +324,7 @@ class Dubins3D(Dynamics):
     # take the state (+1 from before)
     # index the position in the state where gamma is (put it last)
     def hamiltonian(self, state, dvds):
+        # print(state.shape, dvds.shape)
         if self.freeze_model:
             raise NotImplementedError
         if self.set_mode == 'reach':
@@ -851,20 +852,20 @@ class RocketLanding(Dynamics):
     def input_to_coord(self, input):
         input = input[..., :-1]
         coord = input.clone()
-        coord[..., 1:] = (input[..., 1:] * self.state_var.to(device=input.device)) + self.state_mean.to(device=input.device)
+        coord[..., :] = (input[..., :] * self.state_var.to(device=input.device)) + self.state_mean.to(device=input.device)
         return coord
 
     # convert real coord to model input
     def coord_to_input(self, coord):
         input = coord.clone()
-        input[..., 1:] = (coord[..., 1:] - self.state_mean.to(device=coord.device)) / self.state_var.to(device=coord.device)
+        input[..., :] = (coord[..., :] - self.state_mean.to(device=coord.device)) / self.state_var.to(device=coord.device)
         input = torch.cat((input, torch.zeros((*input.shape[:-1], 1), device=input.device)), dim=-1)
         return input
 
     # convert model io to real value
     def io_to_value(self, input, output):
         if self.deepreach_model=="diff":
-            return (output * self.value_var / self.value_normto) + self.boundary_fn(self.input_to_coord(input)[..., 1:])
+            return (output * self.value_var / self.value_normto) + self.boundary_fn(self.input_to_coord(input)[..., :])
         else:
             return (output * self.value_var / self.value_normto) + self.value_mean
 
@@ -875,14 +876,14 @@ class RocketLanding(Dynamics):
         if self.deepreach_model=="diff":
             dvdt = (self.value_var / self.value_normto) * dodi[..., 0]
 
-            dvds_term1 = (self.value_var / self.value_normto / self.state_var.to(device=dodi.device)) * dodi[..., 1:]
-            state = self.input_to_coord(input)[..., 1:]
+            dvds_term1 = (self.value_var / self.value_normto / self.state_var.to(device=dodi.device)) * dodi[..., :]
+            state = self.input_to_coord(input)[..., :]
             dvds_term2 = diff_operators.jacobian(self.boundary_fn(state).unsqueeze(dim=-1), state)[0].squeeze(dim=-2)
             dvds = dvds_term1 + dvds_term2
         
         else:
             dvdt = (self.value_var / self.value_normto) * dodi[..., 0]
-            dvds = (self.value_var / self.value_normto / self.state_var.to(device=dodi.device)) * dodi[..., 1:]
+            dvds = (self.value_var / self.value_normto / self.state_var.to(device=dodi.device)) * dodi[..., :]
         
         return torch.cat((dvdt.unsqueeze(dim=-1), dvds), dim=-1)
 
