@@ -386,7 +386,7 @@ class Dubins3D_P(Dynamics):
     # \dot x    = v \cos \theta
     # \dot y    = v \sin \theta
     # \dot \theta = u
-    def dsdt(self, state, control): # , disturbance
+    def dsdt(self, state, control, disturbance):
         if self.freeze_model:
             raise NotImplementedError
         dsdt = torch.zeros_like(state)
@@ -1228,7 +1228,7 @@ class MultiVehicleCollision(Dynamics):
     def cost_fn(self, state_traj):
         return torch.min(self.boundary_fn(state_traj), dim=-1).values
     
-    def hamiltonian(self, state, dvds, value, maxGamma):
+    def hamiltonian(self, state, dvds): # FIXME: mkim added these args (value, maxGamma) which caused breaking changes, but unneeded?
         # Compute the hamiltonian for the ego vehicle
         ham = self.velocity*(torch.cos(state[..., 6]) * dvds[..., 0] + torch.sin(state[..., 6]) * dvds[..., 1]) + self.omega_max * torch.abs(dvds[..., 6])
         # Hamiltonian effect due to other vehicles
@@ -1296,7 +1296,8 @@ class MultiVehicleCollision_P(Dynamics):
             [-1, 1], [-1, 1],
             [-1, 1], [-1, 1],
             [-math.pi, math.pi], [-math.pi, math.pi], [-math.pi, math.pi],  
-            [0, 1] # TODO: should not be 1
+            # [0, 1] # TODO: should not be 1
+            [0, 0] # gamma = 0 only
         ]
 
     def equivalent_wrapped_state(self, state):
@@ -1310,7 +1311,7 @@ class MultiVehicleCollision_P(Dynamics):
     # \dot x    = v \cos \theta
     # \dot y    = v \sin \theta
     # \dot \theta = u
-    def dsdt(self, state, control):
+    def dsdt(self, state, control, disturbance):
         dsdt = torch.zeros_like(state)
         dsdt[..., 0] = self.velocity*torch.cos(state[..., 6])
         dsdt[..., 1] = self.velocity*torch.sin(state[..., 6])

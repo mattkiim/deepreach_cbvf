@@ -20,7 +20,7 @@ p.add_argument('--mode', type=str, required=True, choices=['all', 'train', 'test
 # save/load directory options
 p.add_argument('--experiments_dir', type=str, default='./runs', help='Where to save the experiment subdirectory.')
 p.add_argument('--experiment_name', type=str, required=True, help='Name of the experient subdirectory.')
-p.add_argument('--use_wandb', default=True, action='store_true', help='use wandb for logging')
+p.add_argument('--use_wandb', default=False, action='store_true', help='use wandb for logging')
 
 use_wandb = p.parse_known_args()[0].use_wandb
 if use_wandb:
@@ -184,7 +184,8 @@ model = modules.SingleBVPNet(in_features=dynamics.input_dim, out_features=1, typ
 model.cuda()
 
 experiment_class = getattr(experiments, orig_opt.experiment_class)
-experiment = experiment_class(model=model, dataset=dataset, experiment_dir=experiment_dir, use_wandb=use_wandb, rollout=orig_opt.rollout)
+# experiment = experiment_class(model=model, dataset=dataset, experiment_dir=experiment_dir, use_wandb=use_wandb, rollout=orig_opt.rollout)
+experiment = experiment_class(model=model, dataset=dataset, experiment_dir=experiment_dir, use_wandb=use_wandb, rollout=False) # FIXME: mkim's 9d baseline doesnt have this opt
 experiment.init_special(**{argname: getattr(orig_opt, argname) for argname in inspect.signature(experiment_class.init_special).parameters.keys() if argname != 'self'})
 
 if (mode == 'all') or (mode == 'train'):
