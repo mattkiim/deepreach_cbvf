@@ -10,6 +10,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import plotly.express as px
 import scipy.io as spio
+from scipy.stats import beta as beta_dist
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from abc import ABC, abstractmethod
@@ -851,7 +852,7 @@ class Experiment(ABC):
                 for delta_level_ in np.arange(0, delta_level_max, delta_level_max/100):
                     k = int(np.argwhere(np.logical_and(
                         costs_ < 0, values_ >= delta_level_)).shape[0])
-                    eps = beta__dist.ppf(beta_,  N-k, k+1)
+                    eps = beta_dist.ppf(beta_,  N-k, k+1)
                     volume = values_[values_ >= delta_level_].shape[0]/values_.shape[0]
                     
                     ks.append(k)
@@ -1628,6 +1629,7 @@ class Experiment(ABC):
         # plot (with ground truth) learned BRTs, recovered BRTs
         z_res = 5
         plot_config = dataset.dynamics.plot_config()
+        print(dataset.dynamics)
         if os.path.exists(os.path.join(self.experiment_dir, 'ground_truth.mat')):
             ground_truth = spio.loadmat(os.path.join(
                 self.experiment_dir, 'ground_truth.mat'))
@@ -1686,6 +1688,7 @@ class Experiment(ABC):
         for i in range(len(zs)):
             coords = torch.zeros(xys.shape[0], dataset.dynamics.state_dim + 1)
             coords[:, 0] = dataset.tMax
+            print(torch.tensor(plot_config['state_slices']).shape)
             coords[:, 1:] = torch.tensor(plot_config['state_slices'])
             coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
             coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]

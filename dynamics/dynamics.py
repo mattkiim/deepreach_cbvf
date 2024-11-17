@@ -4,6 +4,7 @@ from utils import diff_operators
 import math
 import torch
 
+GAMMA = 1
 # during training, states will be sampled uniformly by each state dimension from the model-unit -1 to 1 range (for training stability),
 # which may or may not correspond to proper test ranges
 # note that coord refers to [time, *state], and input refers to whatever is fed directly to the model (often [time, *state, params])
@@ -1297,7 +1298,7 @@ class MultiVehicleCollision_P(Dynamics):
             [-1, 1], [-1, 1],
             [-math.pi, math.pi], [-math.pi, math.pi], [-math.pi, math.pi],  
             # [0, 1] # TODO: should not be 1
-            [0, 0] # gamma = 0 only
+            [GAMMA, GAMMA] # gamma = 0 only
         ]
 
     def equivalent_wrapped_state(self, state):
@@ -1365,12 +1366,14 @@ class MultiVehicleCollision_P(Dynamics):
                 -0.4, 0, 
                 0.4, 0,
                 math.pi/2, math.pi/4, 3*math.pi/4,
+                GAMMA
             ],
             'state_labels': [
                 r'$x_1$', r'$y_1$',
                 r'$x_2$', r'$y_2$',
                 r'$x_3$', r'$y_3$',
                 r'$\theta_1$', r'$\theta_2$', r'$\theta_3$',
+                r'$\gamma$'
             ],
             'x_axis_idx': 0,
             'y_axis_idx': 1,
