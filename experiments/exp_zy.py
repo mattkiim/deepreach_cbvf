@@ -5,44 +5,30 @@ import shutil
 import time
 import math
 import pickle
-import copy
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
 import plotly.express as px
 import scipy.io as spio
-from scipy.stats import beta as beta_dist
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-
+from scipy.stats import beta as beta__dist
 from abc import ABC, abstractmethod
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 from collections import OrderedDict
 from datetime import datetime
-from sklearn import svm 
+from sklearn import svm
 from utils import diff_operators
-from utils.error_evaluators_zy import scenario_optimization, ValueThresholdValidator, MultiValidator, MLPConditionedValidator, target_fraction, MLP, MLPValidator, SliceSampleGenerator
+from utils.error_evaluators import scenario_optimization, ValueThresholdValidator, MultiValidator, MLPConditionedValidator, target_fraction, MLP, MLPValidator, SliceSampleGenerator
 import seaborn as sns
 import itertools
 
-plt.rc('font', family='P052', size=18)  # Set font family and size globally
-plt.rc('axes', titlesize=18)  # Title font size
-plt.rc('axes', labelsize=18)  # Axes label font size
-plt.rc('xtick', labelsize=18)  # X-tick font size
-plt.rc('ytick', labelsize=18)  # Y-tick font size
-
-COLORS = []
 
 class Experiment(ABC):
-    def __init__(self, model, dataset, experiment_dir, use_wandb, rollout):
+    def __init__(self, model, dataset, experiment_dir):
         self.model = model
         self.dataset = dataset
         self.experiment_dir = experiment_dir
-        self.use_wandb = use_wandb
-        self.N = self.dataset.dynamics.state_dim
-        self.rollout = rollout
 
     @abstractmethod
     def init_special(self):
@@ -50,52 +36,120 @@ class Experiment(ABC):
 
     def _load_checkpoint(self, epoch):
         if epoch == -1:
-            model_path = os.path.join(self.experiment_dir, 'training', 'checkpoints', 'model_final.pth')
-            self.model.load_state_dict(torch.load(model_path)['model']) # FIXME: manually copied mkims last epoch into a model file
-            # self.model.load_state_dict(torch.load(model_path)) # should be this
+            model_path = os.path.join(
+                self.experiment_dir, 'training', 'checkpoints', 'model_final.pth')
+            self.model.load_state_dict(torch.load(model_path)['model'])
         else:
-            model_path = os.path.join(self.experiment_dir, 'training', 'checkpoints', 'model_epoch_%04d.pth' % epoch)
+            model_path = os.path.join(
+                self.experiment_dir, 'training', 'checkpoints', 'model_epoch_%04d.pth' % epoch)
             self.model.load_state_dict(torch.load(model_path)['model'])
 
-    
-    def trajectory_rollout(self, policy, dynamics, tMin, tMax, dt, scenario_batch_size, initial_states, tStart_generator=None):
-        state_trajs = torch.zeros(scenario_batch_size, int((tMax-tMin)/dt) + 1, dynamics.state_dim)
-        ctrl_trajs = torch.zeros(scenario_batch_size, int((tMax-tMin)/dt), dynamics.control_dim)
+    def plotSingleFig(self, state_test_range, plot_config, x_resolution, y_resolution, time_resolution):
+        x_min, x_max = state_test_range[plot_config['x_axis_idx']]
+        y_min, y_max = state_test_range[plot_config['y_axis_idx']]
+        times = torch.linspace(0, self.dataset.tMax, time_resolution)
+        xs = torch.linspace(x_min, x_max, x_resolution)
+        ys = torch.linspace(y_min, y_max, y_resolution)
+        xys = torch.cartesian_prod(xs, ys)
+        fig = plt.figure(figsize=(6, 5*len(times)))
+        fig2 = plt.figure(figsize=(6, 5*len(times)))
 
-        state_trajs[:, 0, :] = initial_states
+        for i in range(len(times)):
+            coords = torch.zeros(
+                x_resolution*y_resolution, self.dataset.dynamics.state_dim + 1)
+            coords[:, 0] = times[i]
+            coords[:, 1:] = torch.tensor(plot_config['state_slices'])
+            coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
+            coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
 
-        # rollout
-        for k in tqdm(range(int((tMax-tMin)/dt)), desc='Trajectory Propagation'):
-            traj_time = tMax - k * dt
-            traj_times = torch.full((scenario_batch_size, ), traj_time)
+            with torch.no_grad():
+                model_results = self.model(
+                    {'coords': self.dataset.dynamics.coord_to_input(coords.cuda())})
 
-            # get the states at t=k
-            traj_coords = torch.cat((traj_times.unsqueeze(-1), state_trajs[:, k]), dim=-1)
-            # TODO: move all to cuda 
-            traj_policy_results = policy({'coords': dynamics.coord_to_input(traj_coords.cuda())}) # learned costate/gradient 
-            traj_dvs = dynamics.io_to_dv(traj_policy_results['model_in'], traj_policy_results['model_out'].squeeze(dim=-1)).detach()
+                values = self.dataset.dynamics.io_to_value(model_results['model_in'].detach(
+                ), model_results['model_out'].squeeze(dim=-1).detach())
 
-            # optimal control based on the policy's output
-            ctrl_trajs[:, k] = dynamics.optimal_control(traj_coords[:, 1:].cuda(), traj_dvs[..., 1:].cuda())
+            ax = fig.add_subplot(len(times), 1, 1 + i)
+            ax.set_title('t = %0.2f' % (times[i]))
+            BRT_img = values.detach().cpu().numpy().reshape(x_resolution, y_resolution).T
+            max_value = np.amax(BRT_img)
+            min_value = np.amin(BRT_img)
+            # We'll also create a grey background into which the pixels will fade
+            greys = np.full((*BRT_img.shape, 3), 70, dtype=np.uint8)
+            imshow_kwargs = {
+                'vmax': max_value,
+                'vmin': min_value,
+                'cmap': 'RdYlBu',
+                'extent': (x_min, x_max, y_min, y_max),
+                'origin': 'lower',
+            }
+            ax.imshow(greys)
+            ax.imshow(BRT_img, **imshow_kwargs)
 
-            state_trajs[:, k+1] = dynamics.equivalent_wrapped_state(
-                state_trajs[:, k].cuda() + dt * dynamics.dsdt(state_trajs[:, k].cuda(), ctrl_trajs[:, k].cuda()).cuda()
-            ).cpu()
+            ax2 = fig2.add_subplot(len(times), 1, 1 + i)
+            ax2.set_title('t = %0.2f' % (times[i]))
+            ax2.imshow(1*(BRT_img <= 0), cmap='bwr',
+                       origin='lower', extent=(x_min, x_max, y_min, y_max))
 
-        return state_trajs, ctrl_trajs
+        return fig, fig2
 
-    def initialize_states_with_general_displacement(self, state_dim, theta, displacement):
-        initial_states = torch.zeros(state_dim)
-            
-        x_start = -displacement * torch.cos(theta)  # x-coordinate displaced opposite to the orientation
-        y_start = -displacement * torch.sin(theta)  # y-coordinate displaced opposite to the orientation
+    def plotMultipleFigs(self, state_test_range, plot_config, x_resolution, y_resolution, z_resolution, time_resolution):
+        x_min, x_max = state_test_range[plot_config['x_axis_idx']]
+        y_min, y_max = state_test_range[plot_config['y_axis_idx']]
+        z_min, z_max = state_test_range[plot_config['z_axis_idx']]
 
-        initial_states[0] = x_start  # x position
-        initial_states[1] = y_start  # y position
+        times = torch.linspace(0, self.dataset.tMax, time_resolution)
+        xs = torch.linspace(x_min, x_max, x_resolution)
+        ys = torch.linspace(y_min, y_max, y_resolution)
+        zs = torch.linspace(z_min, z_max, z_resolution)
+        xys = torch.cartesian_prod(xs, ys)
 
-        initial_states[2] = theta  # orientation angle
+        fig = plt.figure(figsize=(5*len(times), 5*len(zs)))
+        fig2 = plt.figure(figsize=(5*len(times), 5*len(zs)))
+        for i in range(len(times)):
+            for j in range(len(zs)):
+                coords = torch.zeros(
+                    x_resolution*y_resolution, self.dataset.dynamics.state_dim + 1)
+                coords[:, 0] = times[i]
+                coords[:, 1:] = torch.tensor(plot_config['state_slices'])
+                coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
+                coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
+                coords[:, 1 + plot_config['z_axis_idx']] = zs[j]
 
-        return initial_states     
+                with torch.no_grad():
+                    model_results = self.model(
+                        {'coords': self.dataset.dynamics.coord_to_input(coords.cuda())})
+                    values = self.dataset.dynamics.io_to_value(model_results['model_in'].detach(
+                    ), model_results['model_out'].squeeze(dim=-1).detach())
+
+                ax = fig.add_subplot(len(times), len(zs), (j+1) + i*len(zs))
+                ax.set_title('t = %0.2f, %s = %0.2f' % (
+                    times[i], plot_config['state_labels'][plot_config['z_axis_idx']], zs[j]))
+
+                BRT_img = values.detach().cpu().numpy().reshape(x_resolution, y_resolution).T
+
+                max_value = np.amax(BRT_img)
+                min_value = np.amin(BRT_img)
+                # We'll also create a grey background into which the pixels will fade
+                greys = np.full((*BRT_img.shape, 3), 70, dtype=np.uint8)
+                imshow_kwargs = {
+                    'vmax': max_value,
+                    'vmin': min_value,
+                    'cmap': 'RdYlBu',
+                    'extent': (x_min, x_max, y_min, y_max),
+                    'origin': 'lower',
+                }
+                ax.imshow(greys)
+                s1 = ax.imshow(BRT_img, **imshow_kwargs)
+                fig.colorbar(s1)
+
+                ax2 = fig2.add_subplot(len(times), len(zs), (j+1) + i*len(zs))
+                ax2.set_title('t = %0.2f, %s = %0.2f' % (
+                    times[i], plot_config['state_labels'][plot_config['z_axis_idx']], zs[j]))
+                ax2.imshow(greys)
+                ax2.imshow(1*(BRT_img <= 0), cmap='bwr',
+                           origin='lower', extent=(x_min, x_max, y_min, y_max))
+        return fig, fig2
 
     def validate(self, epoch, save_path, x_resolution, y_resolution, z_resolution, time_resolution):
         was_training = self.model.training
@@ -105,231 +159,52 @@ class Experiment(ABC):
         plot_config = self.dataset.dynamics.plot_config()
 
         state_test_range = self.dataset.dynamics.state_test_range()
-        x_min, x_max = state_test_range[plot_config['x_axis_idx']]
-        y_min, y_max = state_test_range[plot_config['y_axis_idx']]
-        z_min, z_max = state_test_range[plot_config['z_axis_idx']]
 
-        times = torch.linspace(0, self.dataset.tMax, time_resolution)
-        xs = torch.linspace(x_min, x_max, x_resolution)
-        ys = torch.linspace(y_min, y_max, y_resolution)
-        zs = torch.linspace(z_min, z_max, z_resolution)
-        xys = torch.cartesian_prod(xs, ys)
-        
-        fig = plt.figure(figsize=(5*len(times), 5*len(zs)))
-        for i in range(len(times)):
-            for j in range(len(zs)):
-                coords = torch.zeros(x_resolution*y_resolution, self.dataset.dynamics.state_dim + 1)
-                coords[:, 0] = times[i]
-                coords[:, 1:] = torch.tensor(plot_config['state_slices'])
-                coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
-                coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
-                coords[:, 1 + plot_config['z_axis_idx']] = zs[j]
+        if plot_config['z_axis_idx'] == -1:
+            fig, fig2 = self.plotSingleFig(
+                state_test_range, plot_config, x_resolution, y_resolution, time_resolution)
+            # fig.savefig(save_path)
+        else:
+            fig, fig2 = self.plotMultipleFigs(
+                state_test_range, plot_config, x_resolution, y_resolution, z_resolution, time_resolution)
 
-                with torch.no_grad():
-                    model_results = self.model({'coords': self.dataset.dynamics.coord_to_input(coords.cuda())})
-                    # TODO: do something similar to this? add the optimal trajectory plot to the dataset?
-                    values = self.dataset.dynamics.io_to_value(model_results['model_in'].detach(), model_results['model_out'].squeeze(dim=-1).detach())
-                
-                ax = fig.add_subplot(len(times), len(zs), (j+1) + i*len(zs))
-                ax.set_title('t = %0.2f, %s = %0.2f' % (times[i], plot_config['state_labels'][plot_config['z_axis_idx']], zs[j]))
-                s = ax.imshow(1*(values.detach().cpu().numpy().reshape(x_resolution, y_resolution).T <= 0), cmap='bwr', origin='lower', extent=(-1., 1., -1., 1.))
-                divider = make_axes_locatable(ax)
-                cax = divider.append_axes("right", size="5%", pad=0.05)
-                fig.colorbar(s, cax=cax)
-                # fig.colorbar(s) 
-
-                # TODO: plot optimal trajectories
-                optimal_traj = self.compute_optimal_trajectory(times[i], xys, zs[j], plot_config, coords, values)
-                ax.plot(optimal_traj[:, 0], optimal_traj[:, 1], color='green', linestyle='-', marker='o')
-
-
-        fig.savefig(save_path)
-        if self.use_wandb:
-            wandb.log({
-                'step': epoch,
-                'val_plot': wandb.Image(fig),
-            })
+        wandb.log({
+            'step': epoch,
+            'val_plot': wandb.Image(fig),
+            'val_plot2': wandb.Image(fig2),
+        })
         plt.close()
-
-        if was_training:
-            self.model.train()
-            self.model.requires_grad_(True)
-
-    def validate2(self, epoch, epochs, save_path, x_resolution, y_resolution, z_resolution, time_resolution):
-        was_training = self.model.training
-        self.model.eval()
-        self.model.requires_grad_(False)
-
-        plot_config = self.dataset.dynamics.plot_config()
-
-        state_test_range = self.dataset.dynamics.state_test_range()
-        x_min, x_max = state_test_range[plot_config['x_axis_idx']]
-        y_min, y_max = state_test_range[plot_config['y_axis_idx']]
-        z_min, z_max = state_test_range[plot_config['z_axis_idx']]
-
-        times = torch.linspace(0, self.dataset.tMax, time_resolution)
-        xs = torch.linspace(x_min, x_max, x_resolution)
-        ys = torch.linspace(y_min, y_max, y_resolution)
-        zs = torch.linspace(z_min, z_max, z_resolution)
-        # zs = torch.linspace(-math.pi, math.pi, z_resolution)
-        xys = torch.cartesian_prod(xs, ys)
-
-        # Generate separate file names for 3D and 2D plots based on the provided save_path
-        save_path_3d = os.path.splitext(save_path)[0] + '_3d.png'  # Add '_3d' before the file extension
-        save_path_2d = os.path.splitext(save_path)[0] + '_2d.png'  # Add '_2d' before the file extension
-
-        # Create '2d' and '3d' directories under the save_path if they don't exist
-        dir_2d = os.path.join(os.path.dirname(save_path), '2d')
-        dir_3d = os.path.join(os.path.dirname(save_path), '3d')
-        os.makedirs(dir_2d, exist_ok=True)  # Create the '2d' folder
-        os.makedirs(dir_3d, exist_ok=True)  # Create the '3d' folder
-
-        # Create two separate figures: one for 3D plots and one for 2D heatmaps
-        fig_3d = plt.figure(figsize=(5*len(times), 5*len(zs)))  # Adjust the figure to have extra column for min plot
-        fig_2d = plt.figure(figsize=(5*len(times), 5*len(zs))) # Adjust the figure to have extra column for min plot
-
-        # Array to store minimum values for each x, y pair across all z slices
-        min_values = np.full((x_resolution, y_resolution), np.inf)
-        
-        for i in range(len(times)):
-            for j in range(len(zs)):
-                coords = torch.zeros(x_resolution*y_resolution, self.dataset.dynamics.state_dim + 1)
-                coords[:, 0] = times[i]
-                # coords[:, 1:] = torch.tensor(plot_config['state_slices'])
-                coords[:, 1:-1] = torch.tensor(plot_config['state_slices'])
-
-                coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
-                coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
-                coords[:, 1 + plot_config['z_axis_idx']] = zs[j]
-
-                with torch.no_grad():
-                    model_results = self.model({'coords': self.dataset.dynamics.coord_to_input(coords.cuda())})
-                    values = self.dataset.dynamics.io_to_value(
-                        model_results['model_in'].detach(), 
-                        model_results['model_out'].squeeze(dim=-1).detach()
-                    )
-
-                # Reshape 'values' to 2D for both 2D and 3D plotting
-                values_reshaped = values.detach().cpu().numpy().reshape(x_resolution, y_resolution)
-
-                # Update min_values to track the minimum value across all z-slices for each x, y pair
-                min_values = np.minimum(min_values, values_reshaped)
-
-                # 3D Plot
-                ax_3d = fig_3d.add_subplot(len(times), len(zs), (j+1) + i*(len(zs)), projection='3d')  # Create a 3D subplot
-                X, Y = np.meshgrid(xs, ys)  # Generate grid for x and y
-                ax_3d.plot_surface(X, Y, values_reshaped.T, cmap='viridis', edgecolor='none')  # Plot the 3D surface
-                ax_3d.set_title(f'3D: t = {times[i]:.2f}, {plot_config["state_labels"][plot_config["z_axis_idx"]]} = {zs[j]:.2f}')
-                ax_3d.set_title('t = %0.2f, %s = %0.2f' % (times[i], plot_config['state_labels'][plot_config['z_axis_idx']], zs[j]))
-                ax_3d.set_xlabel('X-axis')
-                ax_3d.set_ylabel('Y-axis')
-                ax_3d.set_zlabel('Values')
-
-                ax_3d.set_xlim([-1.5, 1.5])
-                ax_3d.set_ylim([-1.5, 1.5])
-                ax_3d.set_zlim([-1.5, 1.5])
-
-                ax_3d.view_init(elev=20, azim=120)
-
-
-                # 2D Heatmap Plot
-                ax_2d = fig_2d.add_subplot(len(times), len(zs), (j+1) + i*(len(zs)))  # Create a 2D subplot
-                s = ax_2d.imshow(1*(values_reshaped.T <= 0), cmap='bwr', origin='lower', extent=(-1., 1., -1., 1.))  # Plot the 2D heatmap
-                ax_2d.set_title('t = %0.2f, %s = %0.2f' % (times[i], plot_config['state_labels'][plot_config['z_axis_idx']], zs[j]))
-                fig_2d.colorbar(s, ax=ax_2d)  # Add colorbar for the 2D plot
-
-                if self.rollout:
-                    scenario_batch_size = 1
-                    initial_states = self.initialize_states_with_general_displacement(
-                        state_dim=self.dataset.dynamics.state_dim, 
-                        theta=zs[j],  # Use the zs tensor for orientations
-                        displacement=0.75  # Displace by 0.5
-                    )
-
-
-                    if epoch == epochs: # and j == 2
-                        state_trajs, ctrl_trajs = self.trajectory_rollout(
-                            policy=self.model, 
-                            dynamics=self.dataset.dynamics,
-                            tMin=self.dataset.tMin,
-                            tMax=times[i],
-                            dt=max(times) / epochs * 10,
-                            scenario_batch_size=scenario_batch_size,
-                            initial_states=initial_states
-                        )
-
-                        # plot rolled-out trajectories on the 2D plot
-                        for k in range(state_trajs.shape[0]):
-                            x_traj = state_trajs[k, :, plot_config['x_axis_idx']].cpu().numpy() 
-                            y_traj = state_trajs[k, :, plot_config['y_axis_idx']].cpu().numpy() 
-                            ax_2d.plot(x_traj, y_traj, color='white', lw=1.0, label=f'Trajectory {k + 1}')
-                            ax_2d.scatter(x_traj[0], y_traj[0], color='green', s=100, zorder=5, label=f'Start {k+1}' if k == 0 else "")
-                            ax_2d.scatter(x_traj[-1], y_traj[-1], color='red', s=100, zorder=5, label=f'End {k+1}' if k == 0 else "")
-
-                        
-            # # After processing all z-slices for the current time step, add the minimum z-values plot
-            # # Add minimum z-values as the last column for the 3D figure
-            # ax_min_3d = fig_3d.add_subplot(len(times), len(zs) + 1, (len(zs)+1) + i*(len(zs)+1), projection='3d')
-            # ax_min_3d.plot_surface(X, Y, min_values.T, cmap='plasma', edgecolor='none')
-            # ax_min_3d.set_title(f'3D: t = {times[i]:.2f}, {plot_config["state_labels"][plot_config["z_axis_idx"]]} = min')  # \u03B8 is the Unicode for theta (θ)
-            # ax_min_3d.set_xlabel('X-axis')
-            # ax_min_3d.set_ylabel('Y-axis')
-            # ax_min_3d.set_zlabel('Min Values')
-
-            # # Add minimum z-values as the last column for the 2D figure
-            # ax_min_2d = fig_2d.add_subplot(len(times), len(zs) + 1, (len(zs)+1) + i*(len(zs)+1))
-            # s_min = ax_min_2d.imshow(min_values.T, cmap='plasma', origin='lower', extent=(-1., 1., -1., 1.))
-            # ax_min_2d.set_title(f'2D: t = {times[i]:.2f}, {plot_config["state_labels"][plot_config["z_axis_idx"]]} = min')  # \u03B8 is the Unicode for theta (θ)
-            # fig_2d.colorbar(s_min, ax=ax_min_2d)
-
-        # Adjust the spacing between subplots (wspace for width, hspace for height)
-        fig_3d.subplots_adjust(wspace=0.5, hspace=0.5)  # Adjust the spacing for 3D plots
-        fig_2d.subplots_adjust(wspace=0.5, hspace=0.5)  # Adjust the spacing for 2D plots
-
-        # Save the figures to their respective folders
-        fig_3d.savefig(os.path.join(dir_3d, os.path.basename(save_path_3d)))  # Save the 3D plot figure
-        fig_2d.savefig(os.path.join(dir_2d, os.path.basename(save_path_2d)))  # Save the 2D heatmap figure
-
-        # Optionally log the figures using wandb if enabled
-        if self.use_wandb:
-            wandb.log({
-                'step': epoch,
-                '3D_val_plot': wandb.Image(fig_3d),
-                '2D_val_plot': wandb.Image(fig_2d),
-            })
-
-        # Close the figures
-        plt.close(fig_3d)
-        plt.close(fig_2d)
-
+        plt.close()
         if was_training:
             self.model.train()
             self.model.requires_grad_(True)
 
     def train(
-            self, batch_size, epochs, lr, 
-            steps_til_summary, epochs_til_checkpoint, 
-            loss_fn, clip_grad, use_lbfgs, adjust_relative_grads, 
-            val_x_resolution, val_y_resolution, val_z_resolution, val_time_resolution,
-            ):
+        self, batch_size, epochs, lr, csl_lr,
+        steps_til_summary, epochs_til_checkpoint,
+        loss_fn, clip_grad, use_lbfgs, adjust_relative_grads,
+        val_x_resolution, val_y_resolution, val_z_resolution, val_time_resolution,
+        use_consistancy_loss, max_consistancy_steps
+    ):
         was_eval = not self.model.training
         self.model.train()
         self.model.requires_grad_(True)
 
-        train_dataloader = DataLoader(self.dataset, shuffle=True, batch_size=batch_size, pin_memory=True, num_workers=0)
+        train_dataloader = DataLoader(
+            self.dataset, shuffle=True, batch_size=batch_size, pin_memory=True, num_workers=0)
 
         optim = torch.optim.Adam(lr=lr, params=self.model.parameters())
 
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optim, T_0=2, T_mult=2, eta_min=1e-9)
-        
-        # copy settings from Raissi et al. (2019) and here 
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            optim, gamma=0.999995)  # by default running without scheduler
+        # copy settings from Raissi et al. (2019) and here
         # https://github.com/maziarraissi/PINNs
         if use_lbfgs:
             optim = torch.optim.LBFGS(lr=lr, params=self.model.parameters(), max_iter=50000, max_eval=50000,
-                                    history_size=50, line_search_fn='strong_wolfe')
+                                      history_size=50, line_search_fn='strong_wolfe')
 
         training_dir = os.path.join(self.experiment_dir, 'training')
-        
+
         summaries_dir = os.path.join(training_dir, 'summaries')
         if not os.path.exists(summaries_dir):
             os.makedirs(summaries_dir)
@@ -347,48 +222,117 @@ class Experiment(ABC):
 
         with tqdm(total=len(train_dataloader) * epochs) as pbar:
             train_losses = []
-            for epoch in range(0, epochs):                
+            last_CSL_epoch = -1
+            for epoch in range(0, epochs):
+
+                if self.dataset.pretrain:  # skip CSL
+                    last_CSL_epoch = epoch
+                # if current epochs exceed the counter end, then we train with t \in [tMin,tMax]
+                time_interval_length = min(1.0,
+                                           self.dataset.counter/self.dataset.counter_end)*(self.dataset.tMax-self.dataset.tMin)
+
                 # self-supervised learning
                 for step, (model_input, gt) in enumerate(train_dataloader):
                     start_time = time.time()
-                    model_input = {key: value.cuda() for key, value in model_input.items()}
+
+                    model_input = {key: value.cuda()
+                                   for key, value in model_input.items()}
                     gt = {key: value.cuda() for key, value in gt.items()}
 
-                    model_results = self.model({'coords': model_input['model_coords']})
+                    model_results = self.model(
+                        {'coords': model_input['model_coords']})
 
-                    states = self.dataset.dynamics.input_to_coord(model_results['model_in'].detach())[..., 1:]
-                    values = self.dataset.dynamics.io_to_value(model_results['model_in'].detach(), model_results['model_out'].squeeze(dim=-1))
-                    dvs = self.dataset.dynamics.io_to_dv(model_results['model_in'], model_results['model_out'].squeeze(dim=-1))
+                    states = self.dataset.dynamics.input_to_coord(
+                        model_results['model_in'].detach())[..., 1:]
+
+                    values = self.dataset.dynamics.io_to_value(
+                        model_results['model_in'].detach(), model_results['model_out'].squeeze(dim=-1))
+
+                    dvs = self.dataset.dynamics.io_to_dv(
+                        model_results['model_in'], model_results['model_out'].squeeze(dim=-1))
+
+                    # get optimal next value using discrete bellman eq and cost labels using rollouts
+
+                    if ((time_interval_length < self.dataset.vsl_dT) or torch.all(gt['dirichlet_masks'])):
+                        vsl_preds = torch.Tensor([0]).cuda()
+                        vsl_values = torch.Tensor([0]).cuda()  
+                    elif use_consistancy_loss:
+                        '''use value labels'''
+                        vsl_dT = self.dataset.vsl_dT
+                        if (time_interval_length > vsl_dT):
+                            next_vsl_coords = model_input['vsl_coords']
+                            vsl_results = self.model(
+                                {'coords': next_vsl_coords})
+                            vsl_preds = self.dataset.dynamics.io_to_value(
+                                vsl_results['model_in'].detach(), vsl_results['model_out'].squeeze(dim=-1))
+
+                            next_vsl_state = self.dataset.dynamics.input_to_coord(
+                                vsl_results['model_in'].detach())[..., 1:]
+                            vsl_values = self.dataset.dynamics.boundary_fn(
+                                next_vsl_state)
+                            if self.dataset.dynamics.loss_type == 'brat_hjivi':
+                                current_avoid_values = - \
+                                    self.dataset.dynamics.avoid_fn(
+                                        next_vsl_state)
+                            for j in range(min(math.floor(time_interval_length/vsl_dT)-1, max_consistancy_steps)):
+                                vsl_dvs = self.dataset.dynamics.io_to_dv(
+                                    vsl_results['model_in'], vsl_results['model_out'].squeeze(dim=-1))
+                                optimal_ctrl = self.dataset.dynamics.optimal_control(
+                                    next_vsl_state, vsl_dvs[..., 1:])
+                                optimal_dstb = self.dataset.dynamics.optimal_disturbance(
+                                    next_vsl_state, vsl_dvs[..., 1:])
+                                # next_time = torch.clamp(next_vsl_coords[..., [0]]-vsl_dT,max=self.dataset.tMax, min=-1e-1) 
+                                next_time = next_vsl_coords[..., [0]]-vsl_dT
+                                ds_dt,next_time = self.dataset.dynamics.dsdt_(next_vsl_state, optimal_ctrl.cuda(), optimal_dstb.cuda(), next_time,vsl_dT)
+                                next_vsl_state = self.dataset.dynamics.equivalent_wrapped_state(next_vsl_state + vsl_dT*ds_dt) # freeze the state if t<vsl_dt
+                                next_vsl_state = torch.clamp(next_vsl_state, torch.tensor(self.dataset.dynamics.state_test_range(
+                                    )).cuda()[..., 0], torch.tensor(self.dataset.dynamics.state_test_range()).cuda()[..., 1])
+                                next_vsl_coords = self.dataset.dynamics.coord_to_input(
+                                    torch.cat((next_time, next_vsl_state), dim=-1))
+                                # print( torch.norm( next_vsl_state[...,3:7],dim=-1))
+                                vsl_results = self.model(
+                                    {'coords': next_vsl_coords})
+
+                                next_values = self.dataset.dynamics.io_to_value(
+                                    vsl_results['model_in'].detach(), vsl_results['model_out'].squeeze(dim=-1))
+                                
+                                if self.dataset.dynamics.loss_type == 'brt_hjivi':
+                                    vsl_values = torch.minimum(torch.minimum(
+                                        vsl_values, next_values), self.dataset.dynamics.boundary_fn(next_vsl_state))
+                                elif self.dataset.dynamics.loss_type == 'brat_hjivi':
+                                    current_avoid_values = torch.maximum(
+                                        current_avoid_values, - self.dataset.dynamics.avoid_fn(next_vsl_state))
+                                    vsl_values = torch.maximum(torch.minimum(
+                                        vsl_values, next_values), current_avoid_values)
+                                
+                                
+
                     boundary_values = gt['boundary_values']
+
                     if self.dataset.dynamics.loss_type == 'brat_hjivi':
                         reach_values = gt['reach_values']
                         avoid_values = gt['avoid_values']
                     dirichlet_masks = gt['dirichlet_masks']
 
                     if self.dataset.dynamics.loss_type == 'brt_hjivi':
-                        losses = loss_fn(states, values, dvs[..., 0], dvs[..., 1:], boundary_values, dirichlet_masks, model_results['model_out'])
+
+                        losses = loss_fn(
+                            states, values, dvs[..., 0], dvs[..., 1:], boundary_values, dirichlet_masks, model_results['model_out'], vsl_preds, vsl_values.detach())
                     elif self.dataset.dynamics.loss_type == 'brat_hjivi':
-                        losses = loss_fn(states, values, dvs[..., 0], dvs[..., 1:], boundary_values, reach_values, avoid_values, dirichlet_masks, model_results['model_out'])
+                        losses = loss_fn(
+                            states, values, dvs[..., 0], dvs[..., 1:], boundary_values, reach_values, avoid_values, dirichlet_masks, model_results[
+                                'model_out'], vsl_preds, vsl_values)
                     else:
                         raise NotImplementedError
-                    
-                    if use_lbfgs:
-                        def closure():
-                            optim.zero_grad()
-                            train_loss = 0.
-                            for loss_name, loss in losses.items():
-                                train_loss += loss.mean() 
-                            train_loss.backward()
-                            return train_loss
-                        optim.step(closure)
 
                     # Adjust the relative magnitude of the losses if required
-                    if self.dataset.dynamics.deepreach_model in ['vanilla', 'diff'] and adjust_relative_grads:
+                    if self.dataset.dynamics.deepReach_model in ['reg', 'diff'] and adjust_relative_grads:
                         if losses['diff_constraint_hom'] > 0.01:
                             params = OrderedDict(self.model.named_parameters())
                             # Gradients with respect to the PDE loss
                             optim.zero_grad()
-                            losses['diff_constraint_hom'].backward(retain_graph=True)
+                            losses['diff_constraint_hom'].backward(
+                                retain_graph=True)
                             grads_PDE = []
                             for key, param in params.items():
                                 grads_PDE.append(param.grad.view(-1))
@@ -402,11 +346,15 @@ class Experiment(ABC):
                                 grads_dirichlet.append(param.grad.view(-1))
                             grads_dirichlet = torch.cat(grads_dirichlet)
 
+                            # Set the new weight according to the paper
+                            # num = torch.max(torch.abs(grads_PDE))
                             num = torch.mean(torch.abs(grads_PDE))
                             den = torch.mean(torch.abs(grads_dirichlet))
                             new_weight = 0.9*new_weight + 0.1*num/den
-                            losses['dirichlet'] = new_weight*losses['dirichlet']
-                        writer.add_scalar('weight_scaling', new_weight, total_steps) # TODO: make sure this is off
+                            losses['dirichlet'] = new_weight * \
+                                losses['dirichlet']
+                        writer.add_scalar('weight_scaling',
+                                          new_weight, total_steps)
 
                     # import ipdb; ipdb.set_trace()
 
@@ -415,17 +363,20 @@ class Experiment(ABC):
                         single_loss = loss.mean()
 
                         if loss_name == 'dirichlet':
-                            writer.add_scalar(loss_name, single_loss/new_weight, total_steps)
+                            writer.add_scalar(
+                                loss_name, single_loss/new_weight, total_steps)
                         else:
-                            writer.add_scalar(loss_name, single_loss, total_steps)
+                            writer.add_scalar(
+                                loss_name, single_loss, total_steps)
                         train_loss += single_loss
 
                     train_losses.append(train_loss.item())
-                    writer.add_scalar("total_train_loss", train_loss, total_steps)
+                    writer.add_scalar("total_train_loss",
+                                      train_loss, total_steps)
 
                     if not total_steps % steps_til_summary:
                         torch.save(self.model.state_dict(),
-                                os.path.join(checkpoints_dir, 'model_current.pth'))
+                                   os.path.join(checkpoints_dir, 'model_current.pth'))
                         # summary_fn(model, model_input, gt, model_output, writer, total_steps)
 
                     if not use_lbfgs:
@@ -434,55 +385,55 @@ class Experiment(ABC):
 
                         if clip_grad:
                             if isinstance(clip_grad, bool):
-                                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.)
+                                torch.nn.utils.clip_grad_norm_(
+                                    self.model.parameters(), max_norm=1.)
                             else:
-                                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_grad)
+                                torch.nn.utils.clip_grad_norm_(
+                                    self.model.parameters(), max_norm=clip_grad)
 
                         optim.step()
+                        scheduler.step()
 
                     pbar.update(1)
 
                     if not total_steps % steps_til_summary:
-                        tqdm.write("Epoch %d, Total loss %0.6f, iteration time %0.6f" % (epoch, train_loss, time.time() - start_time))
-                        if self.use_wandb:
-                            wandb.log({
-                                'step': epoch,
-                                'train_loss': train_loss,
-                                'pde_loss': losses['diff_constraint_hom'],
-                            })
-                    
-                    total_steps += 1
+                        tqdm.write("Epoch %d, Total loss %0.6f, iteration time %0.6f" % (
+                            epoch, train_loss, time.time() - start_time))
+                        wandb.log({
+                            'train_loss': train_loss,
+                            'boundary_loss': losses['dirichlet'],
+                            'pde_loss': losses['diff_constraint_hom'],
+                            'vsl_loss': losses['vsl_loss'],
+                        })
 
-                scheduler.step()
+                    total_steps += 1
 
                 if not (epoch+1) % epochs_til_checkpoint:
                     # Saving the optimizer state is important to produce consistent results
-                    checkpoint = { 
+                    checkpoint = {
                         'epoch': epoch+1,
                         'model': self.model.state_dict(),
                         'optimizer': optim.state_dict()}
                     torch.save(checkpoint,
-                        os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % (epoch+1)))
+                               os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % (epoch+1)))
                     np.savetxt(os.path.join(checkpoints_dir, 'train_losses_epoch_%04d.txt' % (epoch+1)),
-                        np.array(train_losses))
+                               np.array(train_losses))
+                    self.validate(
+                        epoch=epoch+1, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_epoch_%04d.png' % (epoch+1)),
+                        x_resolution=val_x_resolution, y_resolution=val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
 
-                    # self.validate(
-                    #     epoch=epoch+1, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_epoch_%04d.png' % (epoch+1)),
-                    #     x_resolution = val_x_resolution, y_resolution = val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
-                    self.validate2(
-                        epoch=epoch+1, epochs=epochs, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_epoch_%04d.png' % (epoch+1)), x_resolution = val_x_resolution, y_resolution = val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
-
+        torch.save(checkpoint, os.path.join(
+            checkpoints_dir, 'model_final.pth'))
 
         if was_eval:
             self.model.eval()
             self.model.requires_grad_(False)
 
-
     def test(self, current_time, last_checkpoint, checkpoint_dt, dt, num_scenarios, num_violations, set_type, control_type, data_step, checkpoint_toload=None):
         was_training = self.model.training
         self.model.eval()
         self.model.requires_grad_(False)
-        if data_step in ["plot_basic_recovery", 'run_basic_recovery', 'plot_hists', 'run_robust_recovery', 'plot_robust_recovery', 'run_robust_recovery_gamma', 'plot_robust_recovery_gamma']:
+        if data_step in ["plot_basic_recovery", 'run_basic_recovery', 'plot_hists', 'run_robust_recovery', 'plot_robust_recovery']:
             testing_dir = self.experiment_dir
         else:
             testing_dir = os.path.join(
@@ -728,7 +679,6 @@ class Experiment(ABC):
                     plt.savefig(os.path.join(
                         testing_dir, f'violations_over_state_dim_{i}.png'), dpi=800)
                     plt.clf()
-
             if data_step == 'plot_hists':
                 logs = {}
 
@@ -805,7 +755,7 @@ class Experiment(ABC):
             if data_step == 'plot_robust_recovery':
                 epsilons=-np.load(os.path.join(testing_dir, f'epsilons.npy'))+1
                 deltas=np.load(os.path.join(testing_dir, f'deltas.npy'))
-                target_eps=0.1
+                target_eps=0.01
                 delta_level=deltas[np.argmin(np.abs(epsilons-target_eps))]
                 fig,values_slices = self.plot_recovery_fig(
                     dataset, dynamics, model, delta_level)
@@ -813,102 +763,11 @@ class Experiment(ABC):
                     testing_dir, f'robust_BRTs_1e-2.png'), dpi=800)
                 np.save(os.path.join(testing_dir, f'values_slices'),values_slices)
 
-            if data_step == 'plot_robust_recovery_gamma':  # FIXME: now complete
-                gamma_values = [0, 0.5, 1]  # Gamma values to iterate over
-                delta_levels = []
-                all_volumes = []
-                all_epsilons = []
-                all_ks = []
-                all_deltas = []
-
-                for gamma in gamma_values:
-                    dynamics2 = copy.deepcopy(dynamics)
-                    dynamics2.gamma_test = gamma
-
-                    # Load the data for this gamma
-                    epsilons = -np.load(os.path.join(testing_dir, f'testing_11_27_2024_01_16/epsilons_{gamma}.npy')) + 1
-                    deltas = np.load(os.path.join(testing_dir, f'testing_11_27_2024_01_16/deltas_{gamma}.npy'))
-                    volumes = np.load(os.path.join(testing_dir, f'testing_11_27_2024_01_16/volumes_{gamma}.npy'))
-                    ks = np.load(os.path.join(testing_dir, f'testing_11_27_2024_01_16/ks_{gamma}.npy'))
-                   
-                    epsilons = 1 - epsilons
-
-                    all_volumes.append(volumes)
-                    all_epsilons.append(epsilons)
-                    all_ks.append(ks)
-                    all_deltas.append(deltas)
-
-                    # Calculate the delta level for target epsilon
-                    target_eps = 1e-2
-                    delta_level = deltas[np.argmin(np.abs(1-epsilons - target_eps))]
-                    delta_levels.append(delta_level)
-
-                # Plot individual recovery figures
-                print(gamma_values, delta_levels)
-                fig = self.plot_recovery_fig_overlay(dataset, dynamics, model, delta_levels, gamma_values)
-                fig.savefig(os.path.join(testing_dir, f'testing_11_27_2024_01_16/robust_BRTs_1e-2_overlay.png'), dpi=800)
-                # np.save(os.path.join(testing_dir, f'values_slices'), values_slices)
-
-                # Plot combined epsilon-volume and outlier plots
-                sns.set_style('whitegrid')
-
-                plt.rc('font', family='P052', size=18)  # Set font family and size globally
-                plt.rc('axes', titlesize=18)  # Title font size
-                plt.rc('axes', labelsize=18)  # Axes label font size
-                plt.rc('xtick', labelsize=18)  # X-tick font size
-                plt.rc('ytick', labelsize=18)  # Y-tick font size
-                                
-                fig, ax1 = plt.subplots(figsize=(8, 5))
-                for spine in ax1.spines.values():
-                    spine.set_edgecolor('black')  # Set the color of the spine to black
-                    spine.set_linewidth(1.5)  # Optionally, make the line thicker
-
-                # Plot epsilon-delta graphs for all gamma values
-                for i, gamma in enumerate(gamma_values):
-                    color = plt.cm.viridis(i / len(gamma_values))
-                    ax1.plot(all_deltas[i], all_epsilons[i], label=f"$\\gamma = {gamma}$", color=color)
-
-                # Customize epsilon-delta graph
-                ax1.set_xlabel('$\\delta$')
-                ax1.set_ylabel('$\\epsilon$')
-                ax1.tick_params(axis='y')
-
-                # Add a legend
-                fig.legend(loc="lower right", bbox_to_anchor=(1., 0.), bbox_transform=ax1.transAxes)
-
-                plt.title("$\\epsilon-\\delta$ for Varying $\\gamma$")
-                plt.tight_layout()
-
-                fig.savefig(os.path.join(testing_dir, f'testing_11_27_2024_01_16/epsilon_delta.png'), dpi=800)
-                plt.close(fig)
-
-                fig, ax1 = plt.subplots(figsize=(8, 5))
-                # Plot epsilon-volume graphs for all gamma values
-                for i, gamma in enumerate(gamma_values):
-                    color = plt.cm.viridis(i / len(gamma_values))
-                    ax1.plot(all_volumes[i], all_epsilons[i], label=f"$\\gamma = {gamma}$", color=color)
-
-                # Customize epsilon-volume graph
-                ax1.set_xlabel('Volume')
-                ax1.set_ylabel('$\\epsilon$')
-                ax1.tick_params(axis='y')
-
-                # Add a legend
-                fig.legend(loc="lower left", bbox_to_anchor=(0., 0.), bbox_transform=ax1.transAxes)
-
-                plt.title("$\\epsilon-Volume$ for Varying $\\gamma$")
-                plt.tight_layout()
-
-                fig.savefig(os.path.join(testing_dir, f'testing_11_27_2024_01_16/epsilon_volume.png'), dpi=800)
-                plt.close(fig)
-
-
-
             if data_step == 'run_robust_recovery':
                 logs = {}
                 # rollout samples all over the state space
                 beta_ = 1e-10
-                N = 4000000
+                N = 300000
                 logs['beta_'] = beta_
                 logs['N'] = N
                 delta_level = float(
@@ -940,12 +799,6 @@ class Experiment(ABC):
                     values_[unsafe_cost_safe_value_indeces])
                 print("delta_level_max: ", delta_level_max)
 
-                recovered_BRT_indices = np.argwhere(np.logical_and(costs_ < 0, values_ >= delta_level_max))
-                recovered_BRT_states = dataset[recovered_BRT_indices]
-
-                output_file = "recovered_BRT_states.npy"
-                np.save(output_file, recovered_BRT_states)
-
                 # for each delta level, determine (1) the corresponding volume;
                 # (2) k and and corresponding epsilon
                 ks = []
@@ -955,13 +808,13 @@ class Experiment(ABC):
                 for delta_level_ in np.arange(0, delta_level_max, delta_level_max/100):
                     k = int(np.argwhere(np.logical_and(
                         costs_ < 0, values_ >= delta_level_)).shape[0])
-                    eps = beta_dist.ppf(beta_,  N-k, k+1)
+                    eps = beta__dist.ppf(beta_,  N-k, k+1)
                     volume = values_[values_ >= delta_level_].shape[0]/values_.shape[0]
                     
                     ks.append(k)
                     epsilons.append(eps)
                     volumes.append(volume)
-                
+
                 # plot epsilon volume graph
                 fig1, ax1 = plt.subplots()
                 color = 'tab:red'
@@ -989,126 +842,7 @@ class Experiment(ABC):
                         np.arange(0, delta_level_max, delta_level_max/100))
                 np.save(os.path.join(testing_dir, f'ks'),
                         ks)
-            
-            if data_step == 'run_robust_recovery_gamma':
-                logs = {}
-                # rollout samples all over the state space
-                beta_ = 1e-16
-                N = 4000000 
-                logs['beta_'] = beta_
-                logs['N'] = N
-                delta_level = float(
-                    'inf') if dynamics.set_mode == 'reach' else float('-inf')
                 
-                all_volumes = []
-                all_epsilons = []
-                all_ks = []
-                gamma_values = [0, 0.5, 1]  # Gamma values to iterate over
-
-                for gamma in gamma_values:
-                    dynamics2 = copy.deepcopy(dynamics)
-                    dynamics2.gamma_test = gamma
-
-                    # Run scenario optimization
-                    results = scenario_optimization(
-                        model=model, dynamics=dynamics2,
-                        tMin=dataset.tMin, tMax=dataset.tMax, dt=dt,
-                        set_type=set_type, control_type=control_type,
-                        scenario_batch_size=min(N, 100000), sample_batch_size=10*min(N, 10000),
-                        sample_generator=SliceSampleGenerator(
-                            dynamics=dynamics2, slices=[None]*dynamics2.state_dim),
-                        sample_validator=ValueThresholdValidator(v_min=float(
-                            '-inf'), v_max=delta_level) if dynamics2.set_mode == 'reach' else ValueThresholdValidator(v_min=delta_level, v_max=float('inf')),
-                        violation_validator=ValueThresholdValidator(v_min=0.0, v_max=float(
-                            'inf')) if dynamics.set_mode == 'reach' else ValueThresholdValidator(v_min=float('-inf'), v_max=0.0),
-                        max_scenarios=N, max_samples=1000*min(N, 10000))
-
-                    costs_ = results['costs'].cpu().numpy()
-                    values_ = results['values'].cpu().numpy()
-                    unsafe_cost_safe_value_indeces = np.argwhere(
-                        np.logical_and(costs_ < 0, values_ >= 0))
-
-                    print("k max: ", unsafe_cost_safe_value_indeces.shape[0])
-                    delta_level_max = np.max(values_[unsafe_cost_safe_value_indeces])
-                    print("delta_level_max: ", delta_level_max)
-                    
-
-                    ks = [] # outliers
-                    epsilons = []
-                    volumes = []
-                    deltas = np.arange(0, delta_level_max, delta_level_max/100)
-                    for delta_level_ in deltas:
-                        k = int(np.argwhere(np.logical_and(
-                            costs_ < 0, values_ >= delta_level_)).shape[0])
-                        
-                        eps = beta_dist.ppf(beta_,  N-k, k+1)
-                        volume = values_[values_ >= delta_level_].shape[0]/values_.shape[0]
-
-                        ks.append(k)
-                        epsilons.append(eps)
-                        volumes.append(volume)
-
-                    np.save(os.path.join(testing_dir, f'epsilons_{gamma}'),
-                        epsilons)
-                    np.save(os.path.join(testing_dir, f'volumes_{gamma}'),
-                            volumes)
-                    np.save(os.path.join(testing_dir, f'deltas_{gamma}'),
-                            np.arange(0, delta_level_max, delta_level_max/100))
-                    np.save(os.path.join(testing_dir, f'ks_{gamma}'),
-                            ks)
-                    np.save(os.path.join(testing_dir, f'values_{gamma}'),
-                            ks)
-
-                    # Store the results for this gamma
-                    all_volumes.append(volumes)
-                    all_epsilons.append(epsilons)
-                    all_ks.append(ks)
-                    
-                    target_eps=0.01
-                    delta_level=deltas[np.argmin(np.abs(np.array(epsilons)-target_eps))]
-                    print(delta_level)
-
-                # Plot all results on the same figure
-                sns.set_style('whitegrid')
-                fig, ax1 = plt.subplots()
-
-                # Plot epsilon-volume graphs for all gamma values
-                for i, gamma in enumerate(gamma_values):
-                    color = plt.cm.viridis(i / len(gamma_values))
-                    ax1.plot(all_volumes[i], all_epsilons[i], label=f"Gamma = {gamma}", color=color)
-
-                # Customize epsilon-volume graph
-                ax1.set_xlabel('Volumes')
-                ax1.set_ylabel('Epsilons', color='tab:red')
-                ax1.tick_params(axis='y', labelcolor='tab:red')
-
-                # Add a secondary y-axis for outliers (ks)
-                ax2 = ax1.twinx()
-                for i, gamma in enumerate(gamma_values):
-                    color = plt.cm.viridis(i / len(gamma_values))
-                    ax2.plot(all_volumes[i], all_ks[i], linestyle='--', color=color)
-
-                # Customize outlier plot
-                ax2.set_ylabel('Number of Outliers', color='tab:blue')
-                ax2.tick_params(axis='y', labelcolor='tab:blue')
-
-                # Add a legend
-                fig.legend(loc="upper right", bbox_to_anchor=(1, 1), bbox_transform=ax1.transAxes)
-
-                plt.title("Epsilon-Volume and Outliers for Different Gamma Values")
-                fig.savefig(os.path.join(testing_dir, f'robust_verification_results_combined.png'), dpi=800)
-                plt.close(fig)
-
-                np.save(os.path.join(testing_dir, f'epsilons'),
-                        all_epsilons)
-                np.save(os.path.join(testing_dir, f'volumes'),
-                        all_volumes)
-                np.save(os.path.join(testing_dir, f'deltas'),
-                        np.arange(0, delta_level_max, delta_level_max/100))
-                np.save(os.path.join(testing_dir, f'ks'),
-                        all_ks)
-
-
             if data_step == 'run_basic_recovery':
                 logs = {}
 
@@ -1270,7 +1004,7 @@ class Experiment(ABC):
                 print('recovered violation rate', str(
                     logs['recovered_violation_rate']))
 
-                fig = self.plot_recovery_fig(
+                fig,values_slices = self.plot_recovery_fig(
                     dataset, dynamics, model, delta_level)
 
                 plt.tight_layout()
@@ -1842,10 +1576,6 @@ class Experiment(ABC):
                 with open(os.path.join(testing_dir, 'cost_logs.pickle'), 'wb') as f:
                     pickle.dump(logs, f)
 
-            if data_step == 'rollout_metrics':
-                pass
-        
-
         if was_training:
             self.model.train()
             self.model.requires_grad_(True)
@@ -1976,78 +1706,6 @@ class Experiment(ABC):
                 ax.set_yticks([])
         return fig, value_grids
 
-
-    def plot_recovery_fig_overlay(self, dataset, dynamics, model, delta_levels, gamma_values):
-        # 1. Prepare the ground truth slices if available
-        plot_config = dataset.dynamics.plot_config()
-        resolution = 512
-
-        # Define the range of x and y for plotting
-        ground_truth_xs = np.linspace(*dynamics.state_test_range()[plot_config['x_axis_idx']], resolution)
-        ground_truth_ys = np.linspace(*dynamics.state_test_range()[plot_config['y_axis_idx']], resolution)
-
-        sns.set_style('whitegrid')
-
-        plt.rc('font', family='P052', size=18)  # Set font family and size globally
-        plt.rc('axes', titlesize=18)  # Title font size
-        plt.rc('axes', labelsize=18)  # Axes label font size
-        plt.rc('xtick', labelsize=18)  # X-tick font size
-        plt.rc('ytick', labelsize=18)  # Y-tick font size
-
-        # Create a single figure and axis
-        fig, ax = plt.subplots(figsize=(5, 5))
-        for spine in ax.spines.values():
-            spine.set_edgecolor('black')  # Set the color of the spine to black
-            spine.set_linewidth(1.5)  # Optionally, make the line thicker
-        plt.title(f"BRT Recovery Varying $\\gamma$")
-
-        # Set axis limits and labels
-        x_min, x_max = dataset.dynamics.state_test_range()[plot_config['x_axis_idx']]
-        y_min, y_max = dataset.dynamics.state_test_range()[plot_config['y_axis_idx']]
-        ax.set_xlim(x_min, x_max)
-        ax.set_ylim(y_min, y_max)
-        ax.set_xlabel(plot_config['state_labels'][plot_config['x_axis_idx']])
-        ax.set_ylabel(plot_config['state_labels'][plot_config['y_axis_idx']])
-        ax.grid(True)
-
-        print(gamma_values)
-
-        # Loop over gamma values and plot
-        COLORS = [(0.267004, 0.004874, 0.329415, 1.0), (0.190631, 0.407061, 0.556089, 1.0), (0.20803, 0.718701, 0.472873, 1.0)]
-        for i, gamma in enumerate(gamma_values):
-            dynamics.gamma_test = gamma  # Update dynamics for the current gamma
-            xs = ground_truth_xs
-            ys = ground_truth_ys
-
-            # Cartesian product of x and y for evaluation
-            xys = torch.cartesian_prod(torch.tensor(xs), torch.tensor(ys))
-            coords = torch.zeros(xys.shape[0], dataset.dynamics.state_dim + 1)
-            coords[:, 0] = dataset.tMax
-            coords[:, 1:] = torch.tensor(plot_config['state_slices'])
-            coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
-            coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
-
-            # Model prediction
-            model_results = model({'coords': dataset.dynamics.coord_to_input(coords.cuda())})
-            values = dataset.dynamics.io_to_value(
-                model_results['model_in'].detach(),
-                model_results['model_out'].detach().squeeze(dim=-1)
-            ).detach().cpu().numpy().reshape(len(xs), len(ys))
-
-            # Plot BRT and recovered BRT for this gamma
-            if gamma == 0: 
-                BRT = values < 0
-            recovered_BRT = values < delta_levels[i]
-            color = COLORS[i]
-            ax.contour(xs, ys, BRT.T, levels=[0.5], linestyles='solid', colors='black', linewidths=1, label=f"$\\gamma = {gamma}$")
-            ax.contour(xs, ys, recovered_BRT.T, levels=[0.5], colors=[color], linewidths=1, label=f"$\\gamma = {gamma}$")
-
-        # Add legend and layout adjustments
-        # ax.legend(fontsize=10)
-        plt.tight_layout()
-
-        return fig
-
     def overlay_ground_truth(self, image, z_idx, ground_truth_grids):
         thickness = max(0, image.shape[0] // 120 - 1)
         ground_truth_grid = ground_truth_grids[:, :, z_idx, 0]
@@ -2095,6 +1753,284 @@ class Experiment(ABC):
                             image[x-thickness:x+1, y -
                                   thickness:y+1+thickness] = color
                             break
+
+    # def post_training_CSL(self,loss_fn, clip_grad, use_lbfgs,
+    #     val_x_resolution, val_y_resolution, val_z_resolution, val_time_resolution,
+    #     use_CSL, CSL_dt, epochs_til_CSL, num_CSL_samples, CSL_loss_frac_cutoff, max_CSL_epochs, CSL_loss_weight, CSL_batch_size):
+
+    #             last_CSL_epoch = epoch
+
+    #             # generate CSL datasets
+    #             self.model.eval()
+
+    #             CSL_dataset = scenario_optimization(
+    #                 model=self.model, dynamics=self.dataset.dynamics,
+    #                 tMin=self.dataset.tMin, tMax=CSL_tMax, dt=CSL_dt,
+    #                 set_type="BRT", control_type="value",  # TODO: implement option for BRS too
+    #                 scenario_batch_size=min(num_CSL_samples, 100000), sample_batch_size=min(10*num_CSL_samples, 1000000),
+    #                 sample_generator=SliceSampleGenerator(dynamics=self.dataset.dynamics, slices=[
+    #                                                         None]*self.dataset.dynamics.state_dim),
+    #                 sample_validator=ValueThresholdValidator(
+    #                     v_min=float('-inf'), v_max=float('inf')),
+    #                 violation_validator=ValueThresholdValidator(
+    #                     v_min=0.0, v_max=0.0),
+    #                 max_scenarios=num_CSL_samples, tStart_generator=lambda n: torch.zeros(
+    #                     n).uniform_(self.dataset.tMin, CSL_tMax)
+    #             )
+    #             CSL_coords = torch.cat(
+    #                 (CSL_dataset['times'].unsqueeze(-1), CSL_dataset['states']), dim=-1)
+    #             CSL_costs = CSL_dataset['costs']
+
+    #             num_CSL_val_samples = int(0.1*num_CSL_samples)
+    #             CSL_val_dataset = scenario_optimization(
+    #                 model=self.model, dynamics=self.dataset.dynamics,
+    #                 tMin=self.dataset.tMin, tMax=CSL_tMax, dt=CSL_dt,
+    #                 set_type="BRT", control_type="value",  # TODO: implement option for BRS too
+    #                 scenario_batch_size=min(num_CSL_val_samples, 100000), sample_batch_size=min(10*num_CSL_val_samples, 1000000),
+    #                 sample_generator=SliceSampleGenerator(dynamics=self.dataset.dynamics, slices=[
+    #                                                         None]*self.dataset.dynamics.state_dim),
+    #                 sample_validator=ValueThresholdValidator(
+    #                     v_min=float('-inf'), v_max=float('inf')),
+    #                 violation_validator=ValueThresholdValidator(
+    #                     v_min=0.0, v_max=0.0),
+    #                 max_scenarios=num_CSL_val_samples, tStart_generator=lambda n: torch.zeros(
+    #                     n).uniform_(self.dataset.tMin, CSL_tMax)
+    #             )
+    #             CSL_val_coords = torch.cat(
+    #                 (CSL_val_dataset['times'].unsqueeze(-1), CSL_val_dataset['states']), dim=-1)
+    #             CSL_val_costs = CSL_val_dataset['costs']
+
+    #             CSL_val_tMax_dataset = scenario_optimization(
+    #                 model=self.model, dynamics=self.dataset.dynamics,
+    #                 tMin=self.dataset.tMin, tMax=self.dataset.tMax, dt=CSL_dt,
+    #                 set_type="BRT", control_type="value",  # TODO: implement option for BRS too
+    #                 scenario_batch_size=min(num_CSL_val_samples, 100000), sample_batch_size=min(10*num_CSL_val_samples, 1000000),
+    #                 sample_generator=SliceSampleGenerator(dynamics=self.dataset.dynamics, slices=[
+    #                                                         None]*self.dataset.dynamics.state_dim),
+    #                 sample_validator=ValueThresholdValidator(
+    #                     v_min=float('-inf'), v_max=float('inf')),
+    #                 violation_validator=ValueThresholdValidator(
+    #                     v_min=0.0, v_max=0.0),
+    #                 # no tStart_generator, since I want all tMax times
+    #                 max_scenarios=num_CSL_val_samples
+    #             )
+    #             CSL_val_tMax_coords = torch.cat(
+    #                 (CSL_val_tMax_dataset['times'].unsqueeze(-1), CSL_val_tMax_dataset['states']), dim=-1)
+    #             CSL_val_tMax_costs = CSL_val_tMax_dataset['costs']
+
+    #             self.model.train()
+
+    #             # CSL optimizer
+    #             CSL_optim = torch.optim.Adam(
+    #                 lr=csl_lr, params=self.model.parameters())
+
+    #             # initial CSL val loss
+    #             CSL_val_results = self.model(
+    #                 {'coords': self.dataset.dynamics.coord_to_input(CSL_val_coords.cuda())})
+    #             CSL_val_preds = self.dataset.dynamics.io_to_value(
+    #                 CSL_val_results['model_in'], CSL_val_results['model_out'].squeeze(dim=-1))
+    #             CSL_val_errors = CSL_val_preds - CSL_val_costs.cuda()
+    #             CSL_val_loss = torch.mean(torch.pow(CSL_val_errors, 2))
+    #             CSL_initial_val_loss = CSL_val_loss
+    #             wandb.log({
+    #                 "step": epoch,
+    #                 "CSL_val_loss": CSL_val_loss.item()
+    #             })
+
+    #             # initial self-supervised learning (SSL) val loss
+    #             # right now, just took code from dataio.py and the SSL training loop above; TODO: refactor all this for cleaner modular code
+    #             CSL_val_states = CSL_val_coords[..., 1:].cuda()
+    #             CSL_val_dvs = self.dataset.dynamics.io_to_dv(
+    #                 CSL_val_results['model_in'], CSL_val_results['model_out'].squeeze(dim=-1))
+    #             CSL_val_boundary_values = self.dataset.dynamics.boundary_fn(
+    #                 CSL_val_states)
+    #             if self.dataset.dynamics.loss_type == 'brat_hjivi':
+    #                 CSL_val_reach_values = self.dataset.dynamics.reach_fn(
+    #                     CSL_val_states)
+    #                 CSL_val_avoid_values = self.dataset.dynamics.avoid_fn(
+    #                     CSL_val_states)
+    #             # assumes time unit in dataset (model) is same as real time units
+    #             CSL_val_dirichlet_masks = CSL_val_coords[:, 0].cuda(
+    #             ) == self.dataset.tMin
+    #             if self.dataset.dynamics.loss_type == 'brt_hjivi':
+    #                 SSL_val_losses = loss_fn(
+    #                     CSL_val_states, CSL_val_preds, CSL_val_dvs[..., 0], CSL_val_dvs[..., 1:], CSL_val_boundary_values, CSL_val_dirichlet_masks)
+    #             elif self.dataset.dynamics.loss_type == 'brat_hjivi':
+    #                 SSL_val_losses = loss_fn(CSL_val_states, CSL_val_preds, CSL_val_dvs[..., 0], CSL_val_dvs[..., 1:],
+    #                                             CSL_val_boundary_values, CSL_val_reach_values, CSL_val_avoid_values, CSL_val_dirichlet_masks)
+    #             else:
+    #                 NotImplementedError
+    #             # I assume there is no dirichlet (boundary) loss here, because I do not ever explicitly generate source samples at tMin (i.e. torch.all(CSL_val_dirichlet_masks == False))
+    #             SSL_val_loss = SSL_val_losses['diff_constraint_hom'].mean()
+    #             wandb.log({
+    #                 "step": epoch,
+    #                 "SSL_val_loss": SSL_val_loss.item()
+    #             })
+
+    #             # CSL training loop
+    #             for CSL_epoch in tqdm(range(max_CSL_epochs)):
+    #                 CSL_idxs = torch.randperm(num_CSL_samples)
+    #                 for CSL_batch in range(math.ceil(num_CSL_samples/CSL_batch_size)):
+    #                     CSL_batch_idxs = CSL_idxs[CSL_batch *
+    #                                                 CSL_batch_size:(CSL_batch+1)*CSL_batch_size]
+    #                     CSL_batch_coords = CSL_coords[CSL_batch_idxs]
+
+    #                     CSL_batch_results = self.model(
+    #                         {'coords': self.dataset.dynamics.coord_to_input(CSL_batch_coords.cuda())})
+    #                     CSL_batch_preds = self.dataset.dynamics.io_to_value(
+    #                         CSL_batch_results['model_in'], CSL_batch_results['model_out'].squeeze(dim=-1))
+    #                     CSL_batch_costs = CSL_costs[CSL_batch_idxs].cuda()
+    #                     CSL_batch_errors = CSL_batch_preds - CSL_batch_costs
+    #                     CSL_batch_loss = CSL_loss_weight * \
+    #                         torch.mean(torch.pow(CSL_batch_errors, 2))
+
+    #                     CSL_batch_states = CSL_batch_coords[..., 1:].cuda()
+    #                     CSL_batch_dvs = self.dataset.dynamics.io_to_dv(
+    #                         CSL_batch_results['model_in'], CSL_batch_results['model_out'].squeeze(dim=-1))
+    #                     CSL_batch_boundary_values = self.dataset.dynamics.boundary_fn(
+    #                         CSL_batch_states)
+    #                     if self.dataset.dynamics.loss_type == 'brat_hjivi':
+    #                         CSL_batch_reach_values = self.dataset.dynamics.reach_fn(
+    #                             CSL_batch_states)
+    #                         CSL_batch_avoid_values = self.dataset.dynamics.avoid_fn(
+    #                             CSL_batch_states)
+    #                     # assumes time unit in dataset (model) is same as real time units
+    #                     CSL_batch_dirichlet_masks = CSL_batch_coords[:, 0].cuda(
+    #                     ) == self.dataset.tMin
+    #                     if self.dataset.dynamics.loss_type == 'brt_hjivi':
+    #                         SSL_batch_losses = loss_fn(
+    #                             CSL_batch_states, CSL_batch_preds, CSL_batch_dvs[..., 0], CSL_batch_dvs[..., 1:], CSL_batch_boundary_values, CSL_batch_dirichlet_masks)
+    #                     elif self.dataset.dynamics.loss_type == 'brat_hjivi':
+    #                         SSL_batch_losses = loss_fn(
+    #                             CSL_batch_states, CSL_batch_preds, CSL_batch_dvs[..., 0], CSL_batch_dvs[..., 1:], CSL_batch_boundary_values, CSL_batch_reach_values, CSL_batch_avoid_values, CSL_batch_dirichlet_masks)
+    #                     else:
+    #                         NotImplementedError
+    #                     # I assume there is no dirichlet (boundary) loss here, because I do not ever explicitly generate source samples at tMin (i.e. torch.all(CSL_batch_dirichlet_masks == False))
+    #                     SSL_batch_loss = SSL_batch_losses['diff_constraint_hom'].mean(
+    #                     )
+
+    #                     CSL_optim.zero_grad()
+    #                     SSL_batch_loss.backward(retain_graph=True)
+    #                     # no adjust_relative_grads, because I assume even with adjustment, the diff_constraint_hom remains unaffected and the only other loss (dirichlet) is zero
+    #                     if (not use_lbfgs) and clip_grad:
+    #                         if isinstance(clip_grad, bool):
+    #                             torch.nn.utils.clip_grad_norm_(
+    #                                 self.model.parameters(), max_norm=1.)
+    #                         else:
+    #                             torch.nn.utils.clip_grad_norm_(
+    #                                 self.model.parameters(), max_norm=clip_grad)
+    #                     CSL_batch_loss.backward()
+    #                     CSL_optim.step()
+
+    #                 # evaluate on CSL_val_dataset
+    #                 CSL_val_results = self.model(
+    #                     {'coords': self.dataset.dynamics.coord_to_input(CSL_val_coords.cuda())})
+    #                 CSL_val_preds = self.dataset.dynamics.io_to_value(
+    #                     CSL_val_results['model_in'], CSL_val_results['model_out'].squeeze(dim=-1))
+    #                 CSL_val_errors = CSL_val_preds - CSL_val_costs.cuda()
+    #                 CSL_val_loss = torch.mean(torch.pow(CSL_val_errors, 2))
+
+    #                 CSL_val_states = CSL_val_coords[..., 1:].cuda()
+    #                 CSL_val_dvs = self.dataset.dynamics.io_to_dv(
+    #                     CSL_val_results['model_in'], CSL_val_results['model_out'].squeeze(dim=-1))
+    #                 CSL_val_boundary_values = self.dataset.dynamics.boundary_fn(
+    #                     CSL_val_states)
+    #                 if self.dataset.dynamics.loss_type == 'brat_hjivi':
+    #                     CSL_val_reach_values = self.dataset.dynamics.reach_fn(
+    #                         CSL_val_states)
+    #                     CSL_val_avoid_values = self.dataset.dynamics.avoid_fn(
+    #                         CSL_val_states)
+    #                 # assumes time unit in dataset (model) is same as real time units
+    #                 CSL_val_dirichlet_masks = CSL_val_coords[:, 0].cuda(
+    #                 ) == self.dataset.tMin
+    #                 if self.dataset.dynamics.loss_type == 'brt_hjivi':
+    #                     SSL_val_losses = loss_fn(
+    #                         CSL_val_states, CSL_val_preds, CSL_val_dvs[..., 0], CSL_val_dvs[..., 1:], CSL_val_boundary_values, CSL_val_dirichlet_masks)
+    #                 elif self.dataset.dynamics.loss_type == 'brat_hjivi':
+    #                     SSL_val_losses = loss_fn(
+    #                         CSL_val_states, CSL_val_preds, CSL_val_dvs[..., 0], CSL_val_dvs[..., 1:], CSL_val_boundary_values, CSL_val_reach_values, CSL_val_avoid_values, CSL_val_dirichlet_masks)
+    #                 else:
+    #                     raise NotImplementedError
+    #                 # I assume there is no dirichlet (boundary) loss here, because I do not ever explicitly generate source samples at tMin (i.e. torch.all(CSL_val_dirichlet_masks == False))
+    #                 SSL_val_loss = SSL_val_losses['diff_constraint_hom'].mean(
+    #                 )
+
+    #                 CSL_val_tMax_results = self.model(
+    #                     {'coords': self.dataset.dynamics.coord_to_input(CSL_val_tMax_coords.cuda())})
+    #                 CSL_val_tMax_preds = self.dataset.dynamics.io_to_value(
+    #                     CSL_val_tMax_results['model_in'], CSL_val_tMax_results['model_out'].squeeze(dim=-1))
+    #                 CSL_val_tMax_errors = CSL_val_tMax_preds - CSL_val_tMax_costs.cuda()
+    #                 CSL_val_tMax_loss = torch.mean(
+    #                     torch.pow(CSL_val_tMax_errors, 2))
+
+    #                 # log CSL losses, recovered_safe_set_fracs
+    #                 if self.dataset.dynamics.set_mode == 'reach':
+    #                     CSL_train_batch_theoretically_recoverable_safe_set_frac = torch.sum(
+    #                         CSL_batch_costs.cuda() < 0) / len(CSL_batch_preds)
+    #                     if len(CSL_batch_preds[CSL_batch_costs.cuda() > 0]) > 0:
+    #                         CSL_train_batch_recovered_safe_set_frac = torch.sum(CSL_batch_preds < torch.min(
+    #                             CSL_batch_preds[CSL_batch_costs.cuda() > 0])) / len(CSL_batch_preds)
+    #                     else:
+    #                         CSL_train_batch_recovered_safe_set_frac = torch.FloatTensor(
+    #                             1)
+    #                     CSL_val_theoretically_recoverable_safe_set_frac = torch.sum(
+    #                         CSL_val_costs.cuda() < 0) / len(CSL_val_preds)
+    #                     CSL_val_recovered_safe_set_frac = torch.sum(CSL_val_preds < torch.min(
+    #                         CSL_val_preds[CSL_val_costs.cuda() > 0])) / len(CSL_val_preds)
+    #                     CSL_val_tMax_theoretically_recoverable_safe_set_frac = torch.sum(
+    #                         CSL_val_tMax_costs.cuda() < 0) / len(CSL_val_tMax_preds)
+    #                     CSL_val_tMax_recovered_safe_set_frac = torch.sum(CSL_val_tMax_preds < torch.min(
+    #                         CSL_val_tMax_preds[CSL_val_tMax_costs.cuda() > 0])) / len(CSL_val_tMax_preds)
+    #                 elif self.dataset.dynamics.set_mode == 'avoid':
+    #                     CSL_train_batch_theoretically_recoverable_safe_set_frac = torch.sum(
+    #                         CSL_batch_costs.cuda() > 0) / len(CSL_batch_preds)
+    #                     # if len(CSL_batch_preds[CSL_batch_costs.cuda() < 0])>0:
+    #                     #     CSL_train_batch_recovered_safe_set_frac = torch.sum(CSL_batch_preds > torch.max(CSL_batch_preds[CSL_batch_costs.cuda() < 0])) / len(CSL_batch_preds)
+    #                     # else:
+    #                     #     CSL_train_batch_recovered_safe_set_frac=torch.FloatTensor(1)
+    #                     CSL_train_batch_recovered_safe_set_frac = torch.sum(CSL_batch_preds > torch.max(
+    #                         CSL_batch_preds[CSL_batch_costs.cuda() < 0])) / len(CSL_batch_preds)
+
+    #                     CSL_val_theoretically_recoverable_safe_set_frac = torch.sum(
+    #                         CSL_val_costs.cuda() > 0) / len(CSL_val_preds)
+    #                     CSL_val_recovered_safe_set_frac = torch.sum(CSL_val_preds > torch.max(
+    #                         CSL_val_preds[CSL_val_costs.cuda() < 0])) / len(CSL_val_preds)
+    #                     CSL_val_tMax_theoretically_recoverable_safe_set_frac = torch.sum(
+    #                         CSL_val_tMax_costs.cuda() > 0) / len(CSL_val_tMax_preds)
+    #                     CSL_val_tMax_recovered_safe_set_frac = torch.sum(CSL_val_tMax_preds > torch.max(
+    #                         CSL_val_tMax_preds[CSL_val_tMax_costs.cuda() < 0])) / len(CSL_val_tMax_preds)
+
+    #                     wandb.log({
+    #                         "step": epoch+(CSL_epoch+1)*int(0.5*epochs_til_CSL/max_CSL_epochs),
+    #                         "CSL_train_batch_loss": CSL_batch_loss.item(),
+    #                         "SSL_train_batch_loss": SSL_batch_loss.item(),
+    #                         "CSL_val_loss": CSL_val_loss.item(),
+    #                         "SSL_val_loss": SSL_val_loss.item(),
+    #                         "CSL_val_tMax_loss": CSL_val_tMax_loss.item(),
+    #                         "CSL_train_batch_theoretically_recoverable_safe_set_frac": CSL_train_batch_theoretically_recoverable_safe_set_frac.item(),
+    #                         "CSL_val_theoretically_recoverable_safe_set_frac": CSL_val_theoretically_recoverable_safe_set_frac.item(),
+    #                         "CSL_val_tMax_theoretically_recoverable_safe_set_frac": CSL_val_tMax_theoretically_recoverable_safe_set_frac.item(),
+    #                         "CSL_train_batch_recovered_safe_set_frac": CSL_train_batch_recovered_safe_set_frac.item(),
+    #                         "CSL_val_recovered_safe_set_frac": CSL_val_recovered_safe_set_frac.item(),
+    #                         "CSL_val_tMax_recovered_safe_set_frac": CSL_val_tMax_recovered_safe_set_frac.item(),
+    #                     })
+
+    #             if not (epoch+1) % epochs_til_checkpoint:
+    #                 # Saving the optimizer state is important to produce consistent results
+    #                 checkpoint = {
+    #                     'epoch': epoch+1,
+    #                     'model': self.model.state_dict(),
+    #                     'optimizer': optim.state_dict()}
+    #                 torch.save(checkpoint,
+    #                            os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % (epoch+1)))
+    #                 np.savetxt(os.path.join(checkpoints_dir, 'train_losses_epoch_%04d.txt' % (epoch+1)),
+    #                            np.array(train_losses))
+    #                 self.validate(
+    #                     epoch=epoch+1, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_epoch_%04d.png' % (epoch+1)),
+    #                     x_resolution=val_x_resolution, y_resolution=val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
+
+    #     torch.save(checkpoint, os.path.join(
+    #         checkpoints_dir, 'model_CSL.pth'))
 
 
 class DeepReach(Experiment):

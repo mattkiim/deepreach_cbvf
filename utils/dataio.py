@@ -25,18 +25,6 @@ class ReachabilityDataset(Dataset):
         model_states = torch.zeros(self.numpoints, self.dynamics.state_dim).uniform_(-1, 1)
         model_states[:, -1] = torch.zeros(self.numpoints).uniform_(0, 1) # gamma term
 
-        # num_zeros = self.numpoints // 3
-        # num_halfs = self.numpoints // 3
-
-        # Assign the values in specified proportions
-        # model_states[:, -1][:num_zeros] = 0.0
-        # model_states[:, -1][num_zeros:num_zeros + num_halfs] = 0.5
-        # model_states[:, -1][num_zeros + num_halfs:] = 1.0
-        # model_states[:, -1] = 1.0
-
-        # print(model_states)
-        # quit()
-
         if self.num_target_samples > 0:
             target_state_samples = self.dynamics.sample_target_state(self.num_target_samples)
             model_states[-self.num_target_samples:] = self.dynamics.coord_to_input(

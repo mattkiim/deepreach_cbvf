@@ -122,7 +122,7 @@ class SingleBVPNet(nn.Module):
         self.mode = mode
         self.net = FCBlock(in_features=in_features, out_features=out_features, num_hidden_layers=num_hidden_layers,
                            hidden_features=hidden_features, outermost_linear=True, nonlinearity=type)
-        print(self)
+        # print(self)
 
     def forward(self, model_input, params=None):
         if params is None:
@@ -136,6 +136,34 @@ class SingleBVPNet(nn.Module):
 
         output = self.net(coords)
         return {'model_in': coords_org, 'model_out': output}
+    
+class SingleBVPNetWithDeltaFilter(nn.Module):
+    def __init__(self, original_model, delta_level):
+        super(SingleBVPNetWithDeltaFilter, self).__init__()
+        self.original_model = original_model  # Original SingleBVPNet
+        self.delta_level = delta_level        # Delta threshold
+
+    def forward(self, x):
+        original_output = self.original_model(x)  # Returns a dict
+        
+        # Extract the relevant output tensor (e.g., 'model_out')
+        output_tensor = original_output['model_out']  # Adjust the key if needed
+        # print(output_tensor)
+        # quit()
+        
+        coords = x['coords'].clone().detach().requires_grad_(True)
+
+        # Filter outputs to exclude values above the delta level
+        filtered_output = torch.where(
+            output_tensor < self.delta_level,  # Keep values strictly less than delta_level
+            output_tensor,                     # Keep the original value if condition is True
+            torch.tensor(float('nan'), dtype=output_tensor.dtype, device=output_tensor.device)  # Set other values to NaN or another placeholder
+        )
+        # print(torch.equal(filtered_output, output_tensor))
+        
+        # Replace the filtered tensor back in the dictionary
+        original_output['model_out'] = filtered_output
+        return original_output
 
 
 ########################
