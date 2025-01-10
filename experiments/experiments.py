@@ -5,9 +5,11 @@ import shutil
 import time
 import math
 import pickle
+import copy
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 import plotly.express as px
 import scipy.io as spio
 from scipy.stats import beta as beta_dist
@@ -24,6 +26,14 @@ from utils import diff_operators
 from utils.error_evaluators_zy import scenario_optimization, ValueThresholdValidator, MultiValidator, MLPConditionedValidator, target_fraction, MLP, MLPValidator, SliceSampleGenerator
 import seaborn as sns
 import itertools
+
+plt.rc('font', family='P052', size=18)  # Set font family and size globally
+plt.rc('axes', titlesize=18)  # Title font size
+plt.rc('axes', labelsize=18)  # Axes label font size
+plt.rc('xtick', labelsize=18)  # X-tick font size
+plt.rc('ytick', labelsize=18)  # Y-tick font size
+
+COLORS = []
 
 class Experiment(ABC):
     def __init__(self, model, dataset, experiment_dir, use_wandb, rollout):
@@ -74,7 +84,6 @@ class Experiment(ABC):
 
         return state_trajs, ctrl_trajs
 
-
     def initialize_states_with_general_displacement(self, state_dim, theta, displacement):
         initial_states = torch.zeros(state_dim)
             
@@ -86,8 +95,7 @@ class Experiment(ABC):
 
         initial_states[2] = theta  # orientation angle
 
-        return initial_states
-        
+        return initial_states     
 
     def validate(self, epoch, save_path, x_resolution, y_resolution, z_resolution, time_resolution):
         was_training = self.model.training
@@ -163,6 +171,7 @@ class Experiment(ABC):
         xs = torch.linspace(x_min, x_max, x_resolution)
         ys = torch.linspace(y_min, y_max, y_resolution)
         zs = torch.linspace(z_min, z_max, z_resolution)
+        # zs = torch.linspace(-math.pi, math.pi, z_resolution)
         xys = torch.cartesian_prod(xs, ys)
 
         # Generate separate file names for 3D and 2D plots based on the provided save_path
@@ -182,7 +191,6 @@ class Experiment(ABC):
         # Array to store minimum values for each x, y pair across all z slices
         min_values = np.full((x_resolution, y_resolution), np.inf)
         
-
         for i in range(len(times)):
             for j in range(len(zs)):
                 coords = torch.zeros(x_resolution*y_resolution, self.dataset.dynamics.state_dim + 1)
@@ -246,7 +254,7 @@ class Experiment(ABC):
                             tMin=self.dataset.tMin,
                             tMax=times[i],
                             dt=max(times) / epochs * 10,
-                            scenario_batch_size=scenario_batch_size, # not sure what I should set this to... 
+                            scenario_batch_size=scenario_batch_size,
                             initial_states=initial_states
                         )
 
@@ -343,7 +351,6 @@ class Experiment(ABC):
                 # self-supervised learning
                 for step, (model_input, gt) in enumerate(train_dataloader):
                     start_time = time.time()
-                
                     model_input = {key: value.cuda() for key, value in model_input.items()}
                     gt = {key: value.cuda() for key, value in gt.items()}
 
@@ -359,8 +366,6 @@ class Experiment(ABC):
                     dirichlet_masks = gt['dirichlet_masks']
 
                     if self.dataset.dynamics.loss_type == 'brt_hjivi':
-                        # losses = loss_fn(states, values, dvs[..., 0], dvs[..., 1:], boundary_values, dirichlet_masks, model_results['model_out']) 
-                        # print(states.shape)
                         losses = loss_fn(states, values, dvs[..., 0], dvs[..., 1:], boundary_values, dirichlet_masks, model_results['model_out'])
                     elif self.dataset.dynamics.loss_type == 'brat_hjivi':
                         losses = loss_fn(states, values, dvs[..., 0], dvs[..., 1:], boundary_values, reach_values, avoid_values, dirichlet_masks, model_results['model_out'])
@@ -477,7 +482,7 @@ class Experiment(ABC):
         was_training = self.model.training
         self.model.eval()
         self.model.requires_grad_(False)
-        if data_step in ["plot_basic_recovery", 'run_basic_recovery', 'plot_hists', 'run_robust_recovery', 'plot_robust_recovery']:
+        if data_step in ["plot_basic_recovery", 'run_basic_recovery', 'plot_hists', 'run_robust_recovery', 'plot_robust_recovery', 'run_robust_recovery_gamma', 'plot_robust_recovery_gamma']:
             testing_dir = self.experiment_dir
         else:
             testing_dir = os.path.join(
@@ -723,6 +728,7 @@ class Experiment(ABC):
                     plt.savefig(os.path.join(
                         testing_dir, f'violations_over_state_dim_{i}.png'), dpi=800)
                     plt.clf()
+
             if data_step == 'plot_hists':
                 logs = {}
 
@@ -799,7 +805,7 @@ class Experiment(ABC):
             if data_step == 'plot_robust_recovery':
                 epsilons=-np.load(os.path.join(testing_dir, f'epsilons.npy'))+1
                 deltas=np.load(os.path.join(testing_dir, f'deltas.npy'))
-                target_eps=0.01
+                target_eps=0.1
                 delta_level=deltas[np.argmin(np.abs(epsilons-target_eps))]
                 fig,values_slices = self.plot_recovery_fig(
                     dataset, dynamics, model, delta_level)
@@ -807,11 +813,102 @@ class Experiment(ABC):
                     testing_dir, f'robust_BRTs_1e-2.png'), dpi=800)
                 np.save(os.path.join(testing_dir, f'values_slices'),values_slices)
 
+            if data_step == 'plot_robust_recovery_gamma':  # FIXME: now complete
+                gamma_values = [0, 0.5, 1]  # Gamma values to iterate over
+                delta_levels = []
+                all_volumes = []
+                all_epsilons = []
+                all_ks = []
+                all_deltas = []
+
+                for gamma in gamma_values:
+                    dynamics2 = copy.deepcopy(dynamics)
+                    dynamics2.gamma_test = gamma
+
+                    # Load the data for this gamma
+                    epsilons = -np.load(os.path.join(testing_dir, f'testing_11_27_2024_01_16/epsilons_{gamma}.npy')) + 1
+                    deltas = np.load(os.path.join(testing_dir, f'testing_11_27_2024_01_16/deltas_{gamma}.npy'))
+                    volumes = np.load(os.path.join(testing_dir, f'testing_11_27_2024_01_16/volumes_{gamma}.npy'))
+                    ks = np.load(os.path.join(testing_dir, f'testing_11_27_2024_01_16/ks_{gamma}.npy'))
+                   
+                    epsilons = 1 - epsilons
+
+                    all_volumes.append(volumes)
+                    all_epsilons.append(epsilons)
+                    all_ks.append(ks)
+                    all_deltas.append(deltas)
+
+                    # Calculate the delta level for target epsilon
+                    target_eps = 1e-2
+                    delta_level = deltas[np.argmin(np.abs(1-epsilons - target_eps))]
+                    delta_levels.append(delta_level)
+
+                # Plot individual recovery figures
+                print(gamma_values, delta_levels)
+                fig = self.plot_recovery_fig_overlay(dataset, dynamics, model, delta_levels, gamma_values)
+                fig.savefig(os.path.join(testing_dir, f'testing_11_27_2024_01_16/robust_BRTs_1e-2_overlay.png'), dpi=800)
+                # np.save(os.path.join(testing_dir, f'values_slices'), values_slices)
+
+                # Plot combined epsilon-volume and outlier plots
+                sns.set_style('whitegrid')
+
+                plt.rc('font', family='P052', size=18)  # Set font family and size globally
+                plt.rc('axes', titlesize=18)  # Title font size
+                plt.rc('axes', labelsize=18)  # Axes label font size
+                plt.rc('xtick', labelsize=18)  # X-tick font size
+                plt.rc('ytick', labelsize=18)  # Y-tick font size
+                                
+                fig, ax1 = plt.subplots(figsize=(8, 5))
+                for spine in ax1.spines.values():
+                    spine.set_edgecolor('black')  # Set the color of the spine to black
+                    spine.set_linewidth(1.5)  # Optionally, make the line thicker
+
+                # Plot epsilon-delta graphs for all gamma values
+                for i, gamma in enumerate(gamma_values):
+                    color = plt.cm.viridis(i / len(gamma_values))
+                    ax1.plot(all_deltas[i], all_epsilons[i], label=f"$\\gamma = {gamma}$", color=color)
+
+                # Customize epsilon-delta graph
+                ax1.set_xlabel('$\\delta$')
+                ax1.set_ylabel('$\\epsilon$')
+                ax1.tick_params(axis='y')
+
+                # Add a legend
+                fig.legend(loc="lower right", bbox_to_anchor=(1., 0.), bbox_transform=ax1.transAxes)
+
+                plt.title("$\\epsilon-\\delta$ for Varying $\\gamma$")
+                plt.tight_layout()
+
+                fig.savefig(os.path.join(testing_dir, f'testing_11_27_2024_01_16/epsilon_delta.png'), dpi=800)
+                plt.close(fig)
+
+                fig, ax1 = plt.subplots(figsize=(8, 5))
+                # Plot epsilon-volume graphs for all gamma values
+                for i, gamma in enumerate(gamma_values):
+                    color = plt.cm.viridis(i / len(gamma_values))
+                    ax1.plot(all_volumes[i], all_epsilons[i], label=f"$\\gamma = {gamma}$", color=color)
+
+                # Customize epsilon-volume graph
+                ax1.set_xlabel('Volume')
+                ax1.set_ylabel('$\\epsilon$')
+                ax1.tick_params(axis='y')
+
+                # Add a legend
+                fig.legend(loc="lower left", bbox_to_anchor=(0., 0.), bbox_transform=ax1.transAxes)
+
+                plt.title("$\\epsilon-Volume$ for Varying $\\gamma$")
+                plt.tight_layout()
+
+                fig.savefig(os.path.join(testing_dir, f'testing_11_27_2024_01_16/epsilon_volume.png'), dpi=800)
+                plt.close(fig)
+
+
+
             if data_step == 'run_robust_recovery':
                 logs = {}
                 # rollout samples all over the state space
                 beta_ = 1e-10
-                N = 300000
+                N = 4000000
                 logs['beta_'] = beta_
                 logs['N'] = N
                 delta_level = float(
@@ -843,6 +940,12 @@ class Experiment(ABC):
                     values_[unsafe_cost_safe_value_indeces])
                 print("delta_level_max: ", delta_level_max)
 
+                recovered_BRT_indices = np.argwhere(np.logical_and(costs_ < 0, values_ >= delta_level_max))
+                recovered_BRT_states = dataset[recovered_BRT_indices]
+
+                output_file = "recovered_BRT_states.npy"
+                np.save(output_file, recovered_BRT_states)
+
                 # for each delta level, determine (1) the corresponding volume;
                 # (2) k and and corresponding epsilon
                 ks = []
@@ -858,7 +961,7 @@ class Experiment(ABC):
                     ks.append(k)
                     epsilons.append(eps)
                     volumes.append(volume)
-
+                
                 # plot epsilon volume graph
                 fig1, ax1 = plt.subplots()
                 color = 'tab:red'
@@ -886,7 +989,126 @@ class Experiment(ABC):
                         np.arange(0, delta_level_max, delta_level_max/100))
                 np.save(os.path.join(testing_dir, f'ks'),
                         ks)
+            
+            if data_step == 'run_robust_recovery_gamma':
+                logs = {}
+                # rollout samples all over the state space
+                beta_ = 1e-16
+                N = 4000000 
+                logs['beta_'] = beta_
+                logs['N'] = N
+                delta_level = float(
+                    'inf') if dynamics.set_mode == 'reach' else float('-inf')
                 
+                all_volumes = []
+                all_epsilons = []
+                all_ks = []
+                gamma_values = [0, 0.5, 1]  # Gamma values to iterate over
+
+                for gamma in gamma_values:
+                    dynamics2 = copy.deepcopy(dynamics)
+                    dynamics2.gamma_test = gamma
+
+                    # Run scenario optimization
+                    results = scenario_optimization(
+                        model=model, dynamics=dynamics2,
+                        tMin=dataset.tMin, tMax=dataset.tMax, dt=dt,
+                        set_type=set_type, control_type=control_type,
+                        scenario_batch_size=min(N, 100000), sample_batch_size=10*min(N, 10000),
+                        sample_generator=SliceSampleGenerator(
+                            dynamics=dynamics2, slices=[None]*dynamics2.state_dim),
+                        sample_validator=ValueThresholdValidator(v_min=float(
+                            '-inf'), v_max=delta_level) if dynamics2.set_mode == 'reach' else ValueThresholdValidator(v_min=delta_level, v_max=float('inf')),
+                        violation_validator=ValueThresholdValidator(v_min=0.0, v_max=float(
+                            'inf')) if dynamics.set_mode == 'reach' else ValueThresholdValidator(v_min=float('-inf'), v_max=0.0),
+                        max_scenarios=N, max_samples=1000*min(N, 10000))
+
+                    costs_ = results['costs'].cpu().numpy()
+                    values_ = results['values'].cpu().numpy()
+                    unsafe_cost_safe_value_indeces = np.argwhere(
+                        np.logical_and(costs_ < 0, values_ >= 0))
+
+                    print("k max: ", unsafe_cost_safe_value_indeces.shape[0])
+                    delta_level_max = np.max(values_[unsafe_cost_safe_value_indeces])
+                    print("delta_level_max: ", delta_level_max)
+                    
+
+                    ks = [] # outliers
+                    epsilons = []
+                    volumes = []
+                    deltas = np.arange(0, delta_level_max, delta_level_max/100)
+                    for delta_level_ in deltas:
+                        k = int(np.argwhere(np.logical_and(
+                            costs_ < 0, values_ >= delta_level_)).shape[0])
+                        
+                        eps = beta_dist.ppf(beta_,  N-k, k+1)
+                        volume = values_[values_ >= delta_level_].shape[0]/values_.shape[0]
+
+                        ks.append(k)
+                        epsilons.append(eps)
+                        volumes.append(volume)
+
+                    np.save(os.path.join(testing_dir, f'epsilons_{gamma}'),
+                        epsilons)
+                    np.save(os.path.join(testing_dir, f'volumes_{gamma}'),
+                            volumes)
+                    np.save(os.path.join(testing_dir, f'deltas_{gamma}'),
+                            np.arange(0, delta_level_max, delta_level_max/100))
+                    np.save(os.path.join(testing_dir, f'ks_{gamma}'),
+                            ks)
+                    np.save(os.path.join(testing_dir, f'values_{gamma}'),
+                            ks)
+
+                    # Store the results for this gamma
+                    all_volumes.append(volumes)
+                    all_epsilons.append(epsilons)
+                    all_ks.append(ks)
+                    
+                    target_eps=0.01
+                    delta_level=deltas[np.argmin(np.abs(np.array(epsilons)-target_eps))]
+                    print(delta_level)
+
+                # Plot all results on the same figure
+                sns.set_style('whitegrid')
+                fig, ax1 = plt.subplots()
+
+                # Plot epsilon-volume graphs for all gamma values
+                for i, gamma in enumerate(gamma_values):
+                    color = plt.cm.viridis(i / len(gamma_values))
+                    ax1.plot(all_volumes[i], all_epsilons[i], label=f"Gamma = {gamma}", color=color)
+
+                # Customize epsilon-volume graph
+                ax1.set_xlabel('Volumes')
+                ax1.set_ylabel('Epsilons', color='tab:red')
+                ax1.tick_params(axis='y', labelcolor='tab:red')
+
+                # Add a secondary y-axis for outliers (ks)
+                ax2 = ax1.twinx()
+                for i, gamma in enumerate(gamma_values):
+                    color = plt.cm.viridis(i / len(gamma_values))
+                    ax2.plot(all_volumes[i], all_ks[i], linestyle='--', color=color)
+
+                # Customize outlier plot
+                ax2.set_ylabel('Number of Outliers', color='tab:blue')
+                ax2.tick_params(axis='y', labelcolor='tab:blue')
+
+                # Add a legend
+                fig.legend(loc="upper right", bbox_to_anchor=(1, 1), bbox_transform=ax1.transAxes)
+
+                plt.title("Epsilon-Volume and Outliers for Different Gamma Values")
+                fig.savefig(os.path.join(testing_dir, f'robust_verification_results_combined.png'), dpi=800)
+                plt.close(fig)
+
+                np.save(os.path.join(testing_dir, f'epsilons'),
+                        all_epsilons)
+                np.save(os.path.join(testing_dir, f'volumes'),
+                        all_volumes)
+                np.save(os.path.join(testing_dir, f'deltas'),
+                        np.arange(0, delta_level_max, delta_level_max/100))
+                np.save(os.path.join(testing_dir, f'ks'),
+                        all_ks)
+
+
             if data_step == 'run_basic_recovery':
                 logs = {}
 
@@ -1620,6 +1842,10 @@ class Experiment(ABC):
                 with open(os.path.join(testing_dir, 'cost_logs.pickle'), 'wb') as f:
                     pickle.dump(logs, f)
 
+            if data_step == 'rollout_metrics':
+                pass
+        
+
         if was_training:
             self.model.train()
             self.model.requires_grad_(True)
@@ -1629,7 +1855,6 @@ class Experiment(ABC):
         # plot (with ground truth) learned BRTs, recovered BRTs
         z_res = 5
         plot_config = dataset.dynamics.plot_config()
-        print(dataset.dynamics)
         if os.path.exists(os.path.join(self.experiment_dir, 'ground_truth.mat')):
             ground_truth = spio.loadmat(os.path.join(
                 self.experiment_dir, 'ground_truth.mat'))
@@ -1688,7 +1913,6 @@ class Experiment(ABC):
         for i in range(len(zs)):
             coords = torch.zeros(xys.shape[0], dataset.dynamics.state_dim + 1)
             coords[:, 0] = dataset.tMax
-            print(torch.tensor(plot_config['state_slices']).shape)
             coords[:, 1:] = torch.tensor(plot_config['state_slices'])
             coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
             coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
@@ -1752,6 +1976,78 @@ class Experiment(ABC):
                 ax.set_yticks([])
         return fig, value_grids
 
+
+    def plot_recovery_fig_overlay(self, dataset, dynamics, model, delta_levels, gamma_values):
+        # 1. Prepare the ground truth slices if available
+        plot_config = dataset.dynamics.plot_config()
+        resolution = 512
+
+        # Define the range of x and y for plotting
+        ground_truth_xs = np.linspace(*dynamics.state_test_range()[plot_config['x_axis_idx']], resolution)
+        ground_truth_ys = np.linspace(*dynamics.state_test_range()[plot_config['y_axis_idx']], resolution)
+
+        sns.set_style('whitegrid')
+
+        plt.rc('font', family='P052', size=18)  # Set font family and size globally
+        plt.rc('axes', titlesize=18)  # Title font size
+        plt.rc('axes', labelsize=18)  # Axes label font size
+        plt.rc('xtick', labelsize=18)  # X-tick font size
+        plt.rc('ytick', labelsize=18)  # Y-tick font size
+
+        # Create a single figure and axis
+        fig, ax = plt.subplots(figsize=(5, 5))
+        for spine in ax.spines.values():
+            spine.set_edgecolor('black')  # Set the color of the spine to black
+            spine.set_linewidth(1.5)  # Optionally, make the line thicker
+        plt.title(f"BRT Recovery Varying $\\gamma$")
+
+        # Set axis limits and labels
+        x_min, x_max = dataset.dynamics.state_test_range()[plot_config['x_axis_idx']]
+        y_min, y_max = dataset.dynamics.state_test_range()[plot_config['y_axis_idx']]
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        ax.set_xlabel(plot_config['state_labels'][plot_config['x_axis_idx']])
+        ax.set_ylabel(plot_config['state_labels'][plot_config['y_axis_idx']])
+        ax.grid(True)
+
+        print(gamma_values)
+
+        # Loop over gamma values and plot
+        COLORS = [(0.267004, 0.004874, 0.329415, 1.0), (0.190631, 0.407061, 0.556089, 1.0), (0.20803, 0.718701, 0.472873, 1.0)]
+        for i, gamma in enumerate(gamma_values):
+            dynamics.gamma_test = gamma  # Update dynamics for the current gamma
+            xs = ground_truth_xs
+            ys = ground_truth_ys
+
+            # Cartesian product of x and y for evaluation
+            xys = torch.cartesian_prod(torch.tensor(xs), torch.tensor(ys))
+            coords = torch.zeros(xys.shape[0], dataset.dynamics.state_dim + 1)
+            coords[:, 0] = dataset.tMax
+            coords[:, 1:] = torch.tensor(plot_config['state_slices'])
+            coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
+            coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
+
+            # Model prediction
+            model_results = model({'coords': dataset.dynamics.coord_to_input(coords.cuda())})
+            values = dataset.dynamics.io_to_value(
+                model_results['model_in'].detach(),
+                model_results['model_out'].detach().squeeze(dim=-1)
+            ).detach().cpu().numpy().reshape(len(xs), len(ys))
+
+            # Plot BRT and recovered BRT for this gamma
+            if gamma == 0: 
+                BRT = values < 0
+            recovered_BRT = values < delta_levels[i]
+            color = COLORS[i]
+            ax.contour(xs, ys, BRT.T, levels=[0.5], linestyles='solid', colors='black', linewidths=1, label=f"$\\gamma = {gamma}$")
+            ax.contour(xs, ys, recovered_BRT.T, levels=[0.5], colors=[color], linewidths=1, label=f"$\\gamma = {gamma}$")
+
+        # Add legend and layout adjustments
+        # ax.legend(fontsize=10)
+        plt.tight_layout()
+
+        return fig
+
     def overlay_ground_truth(self, image, z_idx, ground_truth_grids):
         thickness = max(0, image.shape[0] // 120 - 1)
         ground_truth_grid = ground_truth_grids[:, :, z_idx, 0]
@@ -1799,284 +2095,6 @@ class Experiment(ABC):
                             image[x-thickness:x+1, y -
                                   thickness:y+1+thickness] = color
                             break
-
-    # def post_training_CSL(self,loss_fn, clip_grad, use_lbfgs,
-    #     val_x_resolution, val_y_resolution, val_z_resolution, val_time_resolution,
-    #     use_CSL, CSL_dt, epochs_til_CSL, num_CSL_samples, CSL_loss_frac_cutoff, max_CSL_epochs, CSL_loss_weight, CSL_batch_size):
-
-    #             last_CSL_epoch = epoch
-
-    #             # generate CSL datasets
-    #             self.model.eval()
-
-    #             CSL_dataset = scenario_optimization(
-    #                 model=self.model, dynamics=self.dataset.dynamics,
-    #                 tMin=self.dataset.tMin, tMax=CSL_tMax, dt=CSL_dt,
-    #                 set_type="BRT", control_type="value",  # TODO: implement option for BRS too
-    #                 scenario_batch_size=min(num_CSL_samples, 100000), sample_batch_size=min(10*num_CSL_samples, 1000000),
-    #                 sample_generator=SliceSampleGenerator(dynamics=self.dataset.dynamics, slices=[
-    #                                                         None]*self.dataset.dynamics.state_dim),
-    #                 sample_validator=ValueThresholdValidator(
-    #                     v_min=float('-inf'), v_max=float('inf')),
-    #                 violation_validator=ValueThresholdValidator(
-    #                     v_min=0.0, v_max=0.0),
-    #                 max_scenarios=num_CSL_samples, tStart_generator=lambda n: torch.zeros(
-    #                     n).uniform_(self.dataset.tMin, CSL_tMax)
-    #             )
-    #             CSL_coords = torch.cat(
-    #                 (CSL_dataset['times'].unsqueeze(-1), CSL_dataset['states']), dim=-1)
-    #             CSL_costs = CSL_dataset['costs']
-
-    #             num_CSL_val_samples = int(0.1*num_CSL_samples)
-    #             CSL_val_dataset = scenario_optimization(
-    #                 model=self.model, dynamics=self.dataset.dynamics,
-    #                 tMin=self.dataset.tMin, tMax=CSL_tMax, dt=CSL_dt,
-    #                 set_type="BRT", control_type="value",  # TODO: implement option for BRS too
-    #                 scenario_batch_size=min(num_CSL_val_samples, 100000), sample_batch_size=min(10*num_CSL_val_samples, 1000000),
-    #                 sample_generator=SliceSampleGenerator(dynamics=self.dataset.dynamics, slices=[
-    #                                                         None]*self.dataset.dynamics.state_dim),
-    #                 sample_validator=ValueThresholdValidator(
-    #                     v_min=float('-inf'), v_max=float('inf')),
-    #                 violation_validator=ValueThresholdValidator(
-    #                     v_min=0.0, v_max=0.0),
-    #                 max_scenarios=num_CSL_val_samples, tStart_generator=lambda n: torch.zeros(
-    #                     n).uniform_(self.dataset.tMin, CSL_tMax)
-    #             )
-    #             CSL_val_coords = torch.cat(
-    #                 (CSL_val_dataset['times'].unsqueeze(-1), CSL_val_dataset['states']), dim=-1)
-    #             CSL_val_costs = CSL_val_dataset['costs']
-
-    #             CSL_val_tMax_dataset = scenario_optimization(
-    #                 model=self.model, dynamics=self.dataset.dynamics,
-    #                 tMin=self.dataset.tMin, tMax=self.dataset.tMax, dt=CSL_dt,
-    #                 set_type="BRT", control_type="value",  # TODO: implement option for BRS too
-    #                 scenario_batch_size=min(num_CSL_val_samples, 100000), sample_batch_size=min(10*num_CSL_val_samples, 1000000),
-    #                 sample_generator=SliceSampleGenerator(dynamics=self.dataset.dynamics, slices=[
-    #                                                         None]*self.dataset.dynamics.state_dim),
-    #                 sample_validator=ValueThresholdValidator(
-    #                     v_min=float('-inf'), v_max=float('inf')),
-    #                 violation_validator=ValueThresholdValidator(
-    #                     v_min=0.0, v_max=0.0),
-    #                 # no tStart_generator, since I want all tMax times
-    #                 max_scenarios=num_CSL_val_samples
-    #             )
-    #             CSL_val_tMax_coords = torch.cat(
-    #                 (CSL_val_tMax_dataset['times'].unsqueeze(-1), CSL_val_tMax_dataset['states']), dim=-1)
-    #             CSL_val_tMax_costs = CSL_val_tMax_dataset['costs']
-
-    #             self.model.train()
-
-    #             # CSL optimizer
-    #             CSL_optim = torch.optim.Adam(
-    #                 lr=csl_lr, params=self.model.parameters())
-
-    #             # initial CSL val loss
-    #             CSL_val_results = self.model(
-    #                 {'coords': self.dataset.dynamics.coord_to_input(CSL_val_coords.cuda())})
-    #             CSL_val_preds = self.dataset.dynamics.io_to_value(
-    #                 CSL_val_results['model_in'], CSL_val_results['model_out'].squeeze(dim=-1))
-    #             CSL_val_errors = CSL_val_preds - CSL_val_costs.cuda()
-    #             CSL_val_loss = torch.mean(torch.pow(CSL_val_errors, 2))
-    #             CSL_initial_val_loss = CSL_val_loss
-    #             wandb.log({
-    #                 "step": epoch,
-    #                 "CSL_val_loss": CSL_val_loss.item()
-    #             })
-
-    #             # initial self-supervised learning (SSL) val loss
-    #             # right now, just took code from dataio.py and the SSL training loop above; TODO: refactor all this for cleaner modular code
-    #             CSL_val_states = CSL_val_coords[..., 1:].cuda()
-    #             CSL_val_dvs = self.dataset.dynamics.io_to_dv(
-    #                 CSL_val_results['model_in'], CSL_val_results['model_out'].squeeze(dim=-1))
-    #             CSL_val_boundary_values = self.dataset.dynamics.boundary_fn(
-    #                 CSL_val_states)
-    #             if self.dataset.dynamics.loss_type == 'brat_hjivi':
-    #                 CSL_val_reach_values = self.dataset.dynamics.reach_fn(
-    #                     CSL_val_states)
-    #                 CSL_val_avoid_values = self.dataset.dynamics.avoid_fn(
-    #                     CSL_val_states)
-    #             # assumes time unit in dataset (model) is same as real time units
-    #             CSL_val_dirichlet_masks = CSL_val_coords[:, 0].cuda(
-    #             ) == self.dataset.tMin
-    #             if self.dataset.dynamics.loss_type == 'brt_hjivi':
-    #                 SSL_val_losses = loss_fn(
-    #                     CSL_val_states, CSL_val_preds, CSL_val_dvs[..., 0], CSL_val_dvs[..., 1:], CSL_val_boundary_values, CSL_val_dirichlet_masks)
-    #             elif self.dataset.dynamics.loss_type == 'brat_hjivi':
-    #                 SSL_val_losses = loss_fn(CSL_val_states, CSL_val_preds, CSL_val_dvs[..., 0], CSL_val_dvs[..., 1:],
-    #                                             CSL_val_boundary_values, CSL_val_reach_values, CSL_val_avoid_values, CSL_val_dirichlet_masks)
-    #             else:
-    #                 NotImplementedError
-    #             # I assume there is no dirichlet (boundary) loss here, because I do not ever explicitly generate source samples at tMin (i.e. torch.all(CSL_val_dirichlet_masks == False))
-    #             SSL_val_loss = SSL_val_losses['diff_constraint_hom'].mean()
-    #             wandb.log({
-    #                 "step": epoch,
-    #                 "SSL_val_loss": SSL_val_loss.item()
-    #             })
-
-    #             # CSL training loop
-    #             for CSL_epoch in tqdm(range(max_CSL_epochs)):
-    #                 CSL_idxs = torch.randperm(num_CSL_samples)
-    #                 for CSL_batch in range(math.ceil(num_CSL_samples/CSL_batch_size)):
-    #                     CSL_batch_idxs = CSL_idxs[CSL_batch *
-    #                                                 CSL_batch_size:(CSL_batch+1)*CSL_batch_size]
-    #                     CSL_batch_coords = CSL_coords[CSL_batch_idxs]
-
-    #                     CSL_batch_results = self.model(
-    #                         {'coords': self.dataset.dynamics.coord_to_input(CSL_batch_coords.cuda())})
-    #                     CSL_batch_preds = self.dataset.dynamics.io_to_value(
-    #                         CSL_batch_results['model_in'], CSL_batch_results['model_out'].squeeze(dim=-1))
-    #                     CSL_batch_costs = CSL_costs[CSL_batch_idxs].cuda()
-    #                     CSL_batch_errors = CSL_batch_preds - CSL_batch_costs
-    #                     CSL_batch_loss = CSL_loss_weight * \
-    #                         torch.mean(torch.pow(CSL_batch_errors, 2))
-
-    #                     CSL_batch_states = CSL_batch_coords[..., 1:].cuda()
-    #                     CSL_batch_dvs = self.dataset.dynamics.io_to_dv(
-    #                         CSL_batch_results['model_in'], CSL_batch_results['model_out'].squeeze(dim=-1))
-    #                     CSL_batch_boundary_values = self.dataset.dynamics.boundary_fn(
-    #                         CSL_batch_states)
-    #                     if self.dataset.dynamics.loss_type == 'brat_hjivi':
-    #                         CSL_batch_reach_values = self.dataset.dynamics.reach_fn(
-    #                             CSL_batch_states)
-    #                         CSL_batch_avoid_values = self.dataset.dynamics.avoid_fn(
-    #                             CSL_batch_states)
-    #                     # assumes time unit in dataset (model) is same as real time units
-    #                     CSL_batch_dirichlet_masks = CSL_batch_coords[:, 0].cuda(
-    #                     ) == self.dataset.tMin
-    #                     if self.dataset.dynamics.loss_type == 'brt_hjivi':
-    #                         SSL_batch_losses = loss_fn(
-    #                             CSL_batch_states, CSL_batch_preds, CSL_batch_dvs[..., 0], CSL_batch_dvs[..., 1:], CSL_batch_boundary_values, CSL_batch_dirichlet_masks)
-    #                     elif self.dataset.dynamics.loss_type == 'brat_hjivi':
-    #                         SSL_batch_losses = loss_fn(
-    #                             CSL_batch_states, CSL_batch_preds, CSL_batch_dvs[..., 0], CSL_batch_dvs[..., 1:], CSL_batch_boundary_values, CSL_batch_reach_values, CSL_batch_avoid_values, CSL_batch_dirichlet_masks)
-    #                     else:
-    #                         NotImplementedError
-    #                     # I assume there is no dirichlet (boundary) loss here, because I do not ever explicitly generate source samples at tMin (i.e. torch.all(CSL_batch_dirichlet_masks == False))
-    #                     SSL_batch_loss = SSL_batch_losses['diff_constraint_hom'].mean(
-    #                     )
-
-    #                     CSL_optim.zero_grad()
-    #                     SSL_batch_loss.backward(retain_graph=True)
-    #                     # no adjust_relative_grads, because I assume even with adjustment, the diff_constraint_hom remains unaffected and the only other loss (dirichlet) is zero
-    #                     if (not use_lbfgs) and clip_grad:
-    #                         if isinstance(clip_grad, bool):
-    #                             torch.nn.utils.clip_grad_norm_(
-    #                                 self.model.parameters(), max_norm=1.)
-    #                         else:
-    #                             torch.nn.utils.clip_grad_norm_(
-    #                                 self.model.parameters(), max_norm=clip_grad)
-    #                     CSL_batch_loss.backward()
-    #                     CSL_optim.step()
-
-    #                 # evaluate on CSL_val_dataset
-    #                 CSL_val_results = self.model(
-    #                     {'coords': self.dataset.dynamics.coord_to_input(CSL_val_coords.cuda())})
-    #                 CSL_val_preds = self.dataset.dynamics.io_to_value(
-    #                     CSL_val_results['model_in'], CSL_val_results['model_out'].squeeze(dim=-1))
-    #                 CSL_val_errors = CSL_val_preds - CSL_val_costs.cuda()
-    #                 CSL_val_loss = torch.mean(torch.pow(CSL_val_errors, 2))
-
-    #                 CSL_val_states = CSL_val_coords[..., 1:].cuda()
-    #                 CSL_val_dvs = self.dataset.dynamics.io_to_dv(
-    #                     CSL_val_results['model_in'], CSL_val_results['model_out'].squeeze(dim=-1))
-    #                 CSL_val_boundary_values = self.dataset.dynamics.boundary_fn(
-    #                     CSL_val_states)
-    #                 if self.dataset.dynamics.loss_type == 'brat_hjivi':
-    #                     CSL_val_reach_values = self.dataset.dynamics.reach_fn(
-    #                         CSL_val_states)
-    #                     CSL_val_avoid_values = self.dataset.dynamics.avoid_fn(
-    #                         CSL_val_states)
-    #                 # assumes time unit in dataset (model) is same as real time units
-    #                 CSL_val_dirichlet_masks = CSL_val_coords[:, 0].cuda(
-    #                 ) == self.dataset.tMin
-    #                 if self.dataset.dynamics.loss_type == 'brt_hjivi':
-    #                     SSL_val_losses = loss_fn(
-    #                         CSL_val_states, CSL_val_preds, CSL_val_dvs[..., 0], CSL_val_dvs[..., 1:], CSL_val_boundary_values, CSL_val_dirichlet_masks)
-    #                 elif self.dataset.dynamics.loss_type == 'brat_hjivi':
-    #                     SSL_val_losses = loss_fn(
-    #                         CSL_val_states, CSL_val_preds, CSL_val_dvs[..., 0], CSL_val_dvs[..., 1:], CSL_val_boundary_values, CSL_val_reach_values, CSL_val_avoid_values, CSL_val_dirichlet_masks)
-    #                 else:
-    #                     raise NotImplementedError
-    #                 # I assume there is no dirichlet (boundary) loss here, because I do not ever explicitly generate source samples at tMin (i.e. torch.all(CSL_val_dirichlet_masks == False))
-    #                 SSL_val_loss = SSL_val_losses['diff_constraint_hom'].mean(
-    #                 )
-
-    #                 CSL_val_tMax_results = self.model(
-    #                     {'coords': self.dataset.dynamics.coord_to_input(CSL_val_tMax_coords.cuda())})
-    #                 CSL_val_tMax_preds = self.dataset.dynamics.io_to_value(
-    #                     CSL_val_tMax_results['model_in'], CSL_val_tMax_results['model_out'].squeeze(dim=-1))
-    #                 CSL_val_tMax_errors = CSL_val_tMax_preds - CSL_val_tMax_costs.cuda()
-    #                 CSL_val_tMax_loss = torch.mean(
-    #                     torch.pow(CSL_val_tMax_errors, 2))
-
-    #                 # log CSL losses, recovered_safe_set_fracs
-    #                 if self.dataset.dynamics.set_mode == 'reach':
-    #                     CSL_train_batch_theoretically_recoverable_safe_set_frac = torch.sum(
-    #                         CSL_batch_costs.cuda() < 0) / len(CSL_batch_preds)
-    #                     if len(CSL_batch_preds[CSL_batch_costs.cuda() > 0]) > 0:
-    #                         CSL_train_batch_recovered_safe_set_frac = torch.sum(CSL_batch_preds < torch.min(
-    #                             CSL_batch_preds[CSL_batch_costs.cuda() > 0])) / len(CSL_batch_preds)
-    #                     else:
-    #                         CSL_train_batch_recovered_safe_set_frac = torch.FloatTensor(
-    #                             1)
-    #                     CSL_val_theoretically_recoverable_safe_set_frac = torch.sum(
-    #                         CSL_val_costs.cuda() < 0) / len(CSL_val_preds)
-    #                     CSL_val_recovered_safe_set_frac = torch.sum(CSL_val_preds < torch.min(
-    #                         CSL_val_preds[CSL_val_costs.cuda() > 0])) / len(CSL_val_preds)
-    #                     CSL_val_tMax_theoretically_recoverable_safe_set_frac = torch.sum(
-    #                         CSL_val_tMax_costs.cuda() < 0) / len(CSL_val_tMax_preds)
-    #                     CSL_val_tMax_recovered_safe_set_frac = torch.sum(CSL_val_tMax_preds < torch.min(
-    #                         CSL_val_tMax_preds[CSL_val_tMax_costs.cuda() > 0])) / len(CSL_val_tMax_preds)
-    #                 elif self.dataset.dynamics.set_mode == 'avoid':
-    #                     CSL_train_batch_theoretically_recoverable_safe_set_frac = torch.sum(
-    #                         CSL_batch_costs.cuda() > 0) / len(CSL_batch_preds)
-    #                     # if len(CSL_batch_preds[CSL_batch_costs.cuda() < 0])>0:
-    #                     #     CSL_train_batch_recovered_safe_set_frac = torch.sum(CSL_batch_preds > torch.max(CSL_batch_preds[CSL_batch_costs.cuda() < 0])) / len(CSL_batch_preds)
-    #                     # else:
-    #                     #     CSL_train_batch_recovered_safe_set_frac=torch.FloatTensor(1)
-    #                     CSL_train_batch_recovered_safe_set_frac = torch.sum(CSL_batch_preds > torch.max(
-    #                         CSL_batch_preds[CSL_batch_costs.cuda() < 0])) / len(CSL_batch_preds)
-
-    #                     CSL_val_theoretically_recoverable_safe_set_frac = torch.sum(
-    #                         CSL_val_costs.cuda() > 0) / len(CSL_val_preds)
-    #                     CSL_val_recovered_safe_set_frac = torch.sum(CSL_val_preds > torch.max(
-    #                         CSL_val_preds[CSL_val_costs.cuda() < 0])) / len(CSL_val_preds)
-    #                     CSL_val_tMax_theoretically_recoverable_safe_set_frac = torch.sum(
-    #                         CSL_val_tMax_costs.cuda() > 0) / len(CSL_val_tMax_preds)
-    #                     CSL_val_tMax_recovered_safe_set_frac = torch.sum(CSL_val_tMax_preds > torch.max(
-    #                         CSL_val_tMax_preds[CSL_val_tMax_costs.cuda() < 0])) / len(CSL_val_tMax_preds)
-
-    #                     wandb.log({
-    #                         "step": epoch+(CSL_epoch+1)*int(0.5*epochs_til_CSL/max_CSL_epochs),
-    #                         "CSL_train_batch_loss": CSL_batch_loss.item(),
-    #                         "SSL_train_batch_loss": SSL_batch_loss.item(),
-    #                         "CSL_val_loss": CSL_val_loss.item(),
-    #                         "SSL_val_loss": SSL_val_loss.item(),
-    #                         "CSL_val_tMax_loss": CSL_val_tMax_loss.item(),
-    #                         "CSL_train_batch_theoretically_recoverable_safe_set_frac": CSL_train_batch_theoretically_recoverable_safe_set_frac.item(),
-    #                         "CSL_val_theoretically_recoverable_safe_set_frac": CSL_val_theoretically_recoverable_safe_set_frac.item(),
-    #                         "CSL_val_tMax_theoretically_recoverable_safe_set_frac": CSL_val_tMax_theoretically_recoverable_safe_set_frac.item(),
-    #                         "CSL_train_batch_recovered_safe_set_frac": CSL_train_batch_recovered_safe_set_frac.item(),
-    #                         "CSL_val_recovered_safe_set_frac": CSL_val_recovered_safe_set_frac.item(),
-    #                         "CSL_val_tMax_recovered_safe_set_frac": CSL_val_tMax_recovered_safe_set_frac.item(),
-    #                     })
-
-    #             if not (epoch+1) % epochs_til_checkpoint:
-    #                 # Saving the optimizer state is important to produce consistent results
-    #                 checkpoint = {
-    #                     'epoch': epoch+1,
-    #                     'model': self.model.state_dict(),
-    #                     'optimizer': optim.state_dict()}
-    #                 torch.save(checkpoint,
-    #                            os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % (epoch+1)))
-    #                 np.savetxt(os.path.join(checkpoints_dir, 'train_losses_epoch_%04d.txt' % (epoch+1)),
-    #                            np.array(train_losses))
-    #                 self.validate(
-    #                     epoch=epoch+1, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_epoch_%04d.png' % (epoch+1)),
-    #                     x_resolution=val_x_resolution, y_resolution=val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
-
-    #     torch.save(checkpoint, os.path.join(
-    #         checkpoints_dir, 'model_CSL.pth'))
 
 
 class DeepReach(Experiment):

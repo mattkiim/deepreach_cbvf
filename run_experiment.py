@@ -116,7 +116,7 @@ if (mode == 'all') or (mode == 'test'):
     p.add_argument('--num_scenarios', type=int, default=100000, help='The number of scenarios sampled in scenario optimization for testing')
     p.add_argument('--num_violations', type=int, default=1000, help='The number of violations to sample for in scenario optimization for testing')
     p.add_argument('--control_type', type=str, default='value', choices=['value', 'ttr', 'init_ttr'], help='The controller to use in scenario optimization for testing')
-    p.add_argument('--data_step', type=str, default='run_basic_recovery', choices=['plot_violations', 'run_basic_recovery', 'plot_basic_recovery', 'collect_samples', 'train_binner', 'run_binned_recovery', 'plot_binned_recovery', 'plot_cost_function', 'run_robust_recovery', 'plot_robust_recovery'], help='The data processing step to run')
+    p.add_argument('--data_step', type=str, default='run_basic_recovery', choices=['plot_violations', 'run_basic_recovery', 'plot_basic_recovery', 'collect_samples', 'train_binner', 'run_binned_recovery', 'plot_binned_recovery', 'plot_cost_function', 'run_robust_recovery', 'plot_robust_recovery', 'plot_robust_recovery_gamma', 'run_robust_recovery_gamma', 'run_robust_recovery_gamma'], help='The data processing step to run')
 
 opt = p.parse_args()
 
@@ -146,10 +146,10 @@ elif mode == 'test':
         raise RuntimeError('Cannot run test mode: experiment directory not found!')
 
 current_time = datetime.now()
-# log current config
-with open(os.path.join(experiment_dir, 'config_%s.txt' % current_time.strftime('%m_%d_%Y_%H_%M')), 'w') as f:
-    for arg, val in vars(opt).items():
-        f.write(arg + ' = ' + str(val) + '\n')
+# # log current config
+# with open(os.path.join(experiment_dir, 'config_%s.txt' % current_time.strftime('%m_%d_%Y_%H_%M')), 'w') as f:
+#     for arg, val in vars(opt).items():
+#         f.write(arg + ' = ' + str(val) + '\n')
 
 if (mode == 'all') or (mode == 'train'):
     # set counter_end appropriately if needed
@@ -170,7 +170,8 @@ random.seed(orig_opt.seed)
 np.random.seed(orig_opt.seed)
 
 dynamics_class = getattr(dynamics, orig_opt.dynamics_class)
-dynamics = dynamics_class(**{argname: getattr(orig_opt, argname) for argname in inspect.signature(dynamics_class).parameters.keys() if argname != 'self'})
+dynamics = dynamics_class(**{argname: getattr(orig_opt, argname) for argname in inspect.signature(dynamics_class).parameters.keys() 
+                             if argname != 'self' and hasattr(orig_opt, argname)})
 dynamics.deepreach_model=orig_opt.deepreach_model
 dataset = dataio.ReachabilityDataset(
     dynamics=dynamics, numpoints=orig_opt.numpoints, 
@@ -178,6 +179,9 @@ dataset = dataio.ReachabilityDataset(
     tMin=orig_opt.tMin, tMax=orig_opt.tMax, 
     counter_start=orig_opt.counter_start, counter_end=orig_opt.counter_end, 
     num_src_samples=orig_opt.num_src_samples, num_target_samples=orig_opt.num_target_samples)
+
+# model = modules.SingleBVPNet(in_features=dynamics.input_dim, out_features=1, type=orig_opt.model, mode=orig_opt.model_mode,
+#                              final_layer_factor=1., hidden_features=orig_opt.num_nl, num_hidden_layers=orig_opt.num_hl)
 
 model = modules.SingleBVPNet(in_features=dynamics.input_dim, out_features=1, type=orig_opt.model, mode=orig_opt.model_mode,
                              final_layer_factor=1., hidden_features=orig_opt.num_nl, num_hidden_layers=orig_opt.num_hl)
