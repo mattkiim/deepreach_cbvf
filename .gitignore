@@ -133,4 +133,5 @@ wandb
 
 # experiment data
 runs
-vis
+vis/*
+!vis/high_statistics.py
