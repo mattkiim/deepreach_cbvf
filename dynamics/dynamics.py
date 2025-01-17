@@ -574,12 +574,12 @@ class MultiVehicleCollision(Dynamics):
         }
 
 class MultiVehicleCollision_P(Dynamics):
-    def __init__(self, gamma_test=GAMMA_TEST):
+    def __init__(self, gamma_test=0.1):
         self.angle_alpha_factor = 1.2
         self.velocity = 0.6
         self.omega_max = 1.1
         self.collisionR = 0.25
-        self.gamma_test = gamma_test
+        self.gamma_test = GAMMA_TEST
 
         super().__init__(
             loss_type='brt_hjivi', set_mode='avoid',
@@ -695,12 +695,12 @@ class MultiVehicleCollision_P(Dynamics):
         }
 
 class MultiVehicleCollisionRelative2(Dynamics):
-    def __init__(self, gamma_test=GAMMA_TEST):
+    def __init__(self):
         self.angle_alpha_factor = 1.2
         self.velocity = 0.6
         self.omega_max = 1.1
         self.collisionR = 0.25
-        self.gamma_test = gamma_test
+        self.gamma_test = 0.1
 
         # State layout (10D):
         #   [x1, y1, rx2, ry2, rx3, ry3, theta1, rtheta2, rtheta3, gamma]
@@ -744,7 +744,7 @@ class MultiVehicleCollisionRelative2(Dynamics):
             [-math.pi, math.pi],  # theta1
             [-math.pi, math.pi],  # rtheta2
             [-math.pi, math.pi],  # rtheta3
-            [self.gamma_test, self.gamma_test]  # gamma fixed
+            [0, 1]  # gamma fixed
         ]
 
     def equivalent_wrapped_state(self, state):
@@ -777,8 +777,6 @@ class MultiVehicleCollisionRelative2(Dynamics):
         u2 = control[..., 1]
         u3 = control[..., 2]
 
-        print(control)
-
         v = self.velocity
 
         # Vehicle 1 (Ego) absolute
@@ -798,9 +796,6 @@ class MultiVehicleCollisionRelative2(Dynamics):
         ds[..., 4] = v*(torch.cos(theta1 + rtheta3) - torch.cos(theta1))
         ds[..., 5] = v*(torch.sin(theta1 + rtheta3) - torch.sin(theta1))
         ds[..., 8] = u3 - u1
-
-        # gamma (if static)
-        ds[..., 9] = 0.0
 
         return ds
 
@@ -917,79 +912,3 @@ class MultiVehicleCollisionRelative2(Dynamics):
 
     def sample_target_state(self, num_samples):
         raise NotImplementedError
-
-    def __init__(self, goalR: float, u_max:float, set_mode: str, freeze_model: bool):
-        self.goalR = goalR
-        self.u_max = u_max
-        self.freeze_model = freeze_model
-        super().__init__(
-            loss_type='brt_hjivi', set_mode=set_mode,
-            state_dim=2, input_dim=2, control_dim=1, disturbance_dim=1,
-            state_mean=[0, 0], 
-            state_var=[1, 1],
-            value_mean=0.25, 
-            value_var=0.5, 
-            value_normto=0.02,
-            deepreach_model="exact"
-        )
-
-    def state_test_range(self):
-        return [
-            [-1, 1],  # Position range
-            [-1, 1],  # Velocity range
-        ]
-
-    def equivalent_wrapped_state(self, state):
-        # No wrapping needed for a simple 2D double integrator
-        return state
-
-    # Double Integrator dynamics
-    # \dot{x}_1 = x_2 + d
-    # \dot{x}_2 = u
-    def dsdt(self, state, control, disturbance):
-        if self.freeze_model:
-            raise NotImplementedError
-        dsdt = torch.zeros_like(state)
-        dsdt[..., 0] = state[..., 1] + disturbance[..., 0]  # \dot{x}_1 = x_2 + d
-        dsdt[..., 1] = control[..., 0]  # \dot{x}_2 = u
-        return dsdt
-    
-    def boundary_fn(self, state):
-        # Define a simple boundary, e.g., distance from origin in position space
-        return torch.abs(state[..., 0]) - self.goalR
-        # return torch.norm(state[..., :2], dim=-1) - self.goalR
-
-    def sample_target_state(self, num_samples):
-        raise NotImplementedError
-    
-    def cost_fn(self, state_traj):
-        return torch.min(self.boundary_fn(state_traj), dim=-1).values
-    
-    def hamiltonian(self, state, dvds):
-        if self.freeze_model:
-            raise NotImplementedError
-        # Hamiltonian for the Double Integrator with control and disturbance
-        if self.set_mode == 'reach':
-            return state[..., 1] * dvds[..., 0] - self.u_max * torch.abs(dvds[..., 1]) - self.d_max * torch.abs(dvds[..., 0])
-        elif self.set_mode == 'avoid':
-            return state[..., 1] * dvds[..., 0] + self.u_max * torch.abs(dvds[..., 1]) + self.d_max * torch.abs(dvds[..., 0])
-
-    def optimal_control(self, state, dvds):
-        # Control that maximizes/minimizes based on the sign of dvds for the second state
-        if self.set_mode == 'reach':
-            return (-self.u_max * torch.sign(dvds[..., 1]))[..., None]
-        elif self.set_mode == 'avoid':
-            return (self.u_max * torch.sign(dvds[..., 1]))[..., None]
-
-    def optimal_disturbance(self, state, dvds):
-        # dist that maximizes/minimizes based on the sign of dvds for the first state
-        # return (self.d_max * torch.sign(dvds[..., 0]))[..., None]
-        return 0
-
-    def plot_config(self):
-        return {
-            'state_slices': [0, 0],
-            'state_labels': ['Position', 'Velocity'],
-            'x_axis_idx': 0,
-            'y_axis_idx': 1,
-        }
