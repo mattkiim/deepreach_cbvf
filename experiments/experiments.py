@@ -51,8 +51,8 @@ class Experiment(ABC):
     def _load_checkpoint(self, epoch):
         if epoch == -1:
             model_path = os.path.join(self.experiment_dir, 'training', 'checkpoints', 'model_final.pth')
-            self.model.load_state_dict(torch.load(model_path)['model']) # FIXME: manually copied mkims last epoch into a model file
-            # self.model.load_state_dict(torch.load(model_path)) # should be this
+            # self.model.load_state_dict(torch.load(model_path)['model']) # FIXME: manually copied mkims last epoch into a model file
+            self.model.load_state_dict(torch.load(model_path)) # should be this
         else:
             model_path = os.path.join(self.experiment_dir, 'training', 'checkpoints', 'model_epoch_%04d.pth' % epoch)
             self.model.load_state_dict(torch.load(model_path)['model'])
@@ -195,8 +195,8 @@ class Experiment(ABC):
             for j in range(len(zs)):
                 coords = torch.zeros(x_resolution*y_resolution, self.dataset.dynamics.state_dim + 1)
                 coords[:, 0] = times[i]
-                # coords[:, 1:] = torch.tensor(plot_config['state_slices'])
-                coords[:, 1:-1] = torch.tensor(plot_config['state_slices'])
+                coords[:, 1:] = torch.tensor(plot_config['state_slices'])
+                # coords[:, 1:-1] = torch.tensor(plot_config['state_slices'])
 
                 coords[:, 1 + plot_config['x_axis_idx']] = xys[:, 0]
                 coords[:, 1 + plot_config['y_axis_idx']] = xys[:, 1]
@@ -225,16 +225,16 @@ class Experiment(ABC):
                 ax_3d.set_ylabel('Y-axis')
                 ax_3d.set_zlabel('Values')
 
-                ax_3d.set_xlim([-1.5, 1.5])
-                ax_3d.set_ylim([-1.5, 1.5])
-                ax_3d.set_zlim([-1.5, 1.5])
+                ax_3d.set_xlim([x_min, x_max])
+                ax_3d.set_ylim([y_min, y_max])
+                ax_3d.set_zlim([z_min, z_max])
 
                 ax_3d.view_init(elev=20, azim=120)
 
 
                 # 2D Heatmap Plot
                 ax_2d = fig_2d.add_subplot(len(times), len(zs), (j+1) + i*(len(zs)))  # Create a 2D subplot
-                s = ax_2d.imshow(1*(values_reshaped.T <= 0), cmap='bwr', origin='lower', extent=(-1., 1., -1., 1.))  # Plot the 2D heatmap
+                s = ax_2d.imshow(1*(values_reshaped.T <= 0), cmap='bwr', origin='lower', extent=(x_min, x_max, y_min, y_max))  # Plot the 2D heatmap
                 ax_2d.set_title('t = %0.2f, %s = %0.2f' % (times[i], plot_config['state_labels'][plot_config['z_axis_idx']], zs[j]))
                 fig_2d.colorbar(s, ax=ax_2d)  # Add colorbar for the 2D plot
 
@@ -347,7 +347,7 @@ class Experiment(ABC):
 
         with tqdm(total=len(train_dataloader) * epochs) as pbar:
             train_losses = []
-            for epoch in range(0, epochs):                
+            for epoch in range(0, epochs):
                 # self-supervised learning
                 for step, (model_input, gt) in enumerate(train_dataloader):
                     start_time = time.time()

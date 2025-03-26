@@ -22,14 +22,23 @@ dynamics = MultiVehicleCollision_P()
 
 # load initial states
 # target_row = np.array([0.0080, -0.5999, 0.5293, -0.2825, -0.4753, -0.3662, 1.5841, 2.6514, 0.6565])
-initial_states = torch.tensor(np.load("./initial_states_all_500.npy"))[:, :-1].unsqueeze(1)
+# initial_states = torch.tensor(np.load("./initial_states/initial_states_all_10000.npy"))[:, :-1].unsqueeze(1)
+# initial_states = torch.tensor(np.load("./initial_states/initial_states.npy"))[:, :-1].unsqueeze(1)
+# initial_states = torch.tensor(np.load("./initial_states/initial_states_all_500.npy"))[:, :-1].unsqueeze(1)
+# initial_states = torch.tensor(np.load("../runs/mvc_t1_g1/plots/initial_conditions.npy"))[:, :-1].unsqueeze(1)
+initial_states = torch.tensor(np.load("./initial_states/initial_states_5000.npy"))[:, :-1].unsqueeze(1)
+# initial_states = torch.tensor(np.load("./initial_states/initial_conditions_2.npy"))[:, :-1].unsqueeze(1)
+
+print(initial_states[0])
+# quit()
+
 n_initials = initial_states.shape[0]
 
 # load model
 epochs = 300000
 tMax = opt.time
-gammaMax = opt.gamma
-model_name = f"mvc_t1_g{gammaMax}"
+gammaMax = 1
+model_name = f"mvc_t3_g{gammaMax}"
 model_path = f"/home/ubuntu/deepreach_cbvf/runs/{model_name}/training/checkpoints/model_epoch_{epochs}.pth"
 checkpoint = torch.load(model_path)
 
@@ -65,6 +74,7 @@ deltas = [0., 0., 0.]
 
 
 def trajectory_rollout(policy, dynamics, tMin, tMax, dt, scenario_batch_size, initial_states):
+    # tMax = 0.01
     state_trajs = torch.zeros(scenario_batch_size, int((tMax - tMin) / dt) + 1, dynamics.state_dim)
     ctrl_trajs = torch.zeros(scenario_batch_size, int((tMax - tMin) / dt), dynamics.control_dim)
 
@@ -81,12 +91,10 @@ def trajectory_rollout(policy, dynamics, tMin, tMax, dt, scenario_batch_size, in
 
         ctrl_trajs[:, k] = dynamics.optimal_control(traj_coords[:, 1:].cuda(), traj_dvs[..., 1:].cuda()) # optimal control
 
-        state_trajs[:, k + 1] = dynamics.equivalent_wrapped_state(
+
+        state_trajs[:, k+1] = dynamics.equivalent_wrapped_state(
             state_trajs[:, k].cuda() + dt * dynamics.dsdt(state_trajs[:, k].cuda(), ctrl_trajs[:, k].cuda(), []).cuda()
         ).cpu()
-
-        print(ctrl_trajs.shape)
-        quit()
 
     return state_trajs, ctrl_trajs
 
@@ -189,8 +197,13 @@ fn = [confusion_matrix['fn'][i] / (confusion_matrix['fn'][i] + confusion_matrix[
 print("FP CM: ", fp)
 print("FN CM: ", fn)
 
-fp = [confusion_matrix['fp'][i] / 5000 for i in range(0, z_res)]
-fn = [confusion_matrix['fn'][i] / 5000 for i in range(0, z_res)]
+fp = [confusion_matrix['fp'][i] / initial_states.shape[0] for i in range(0, z_res)]
+fn = [confusion_matrix['fn'][i] / initial_states.shape[0] for i in range(0, z_res)]
 print("FP: ", fp)
 print("FN: ", fn)
-print("Overall: ", [1,1,1] - fp - fn)
+
+tp = [confusion_matrix['tp'][i] / initial_states.shape[0] for i in range(0, z_res)]
+tn = [confusion_matrix['tn'][i] / initial_states.shape[0] for i in range(0, z_res)]
+# print("TP: ", tp)
+# print("TN: ", tn)
+print("Success:", np.add(tp, tn))
