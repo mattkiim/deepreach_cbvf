@@ -132,7 +132,8 @@ dmypy.json
 wandb
 
 # experiment data
-runs
+runs/*
+!runs/mvc_t3_g1
 vis/*
 !vis/high_statistics.py
 !vis/boundary_initials5000.npy
