@@ -616,7 +616,7 @@ class MultiVehicleCollision_P(Dynamics):
 class MultiVehicleCollision_P_Real(Dynamics):
     def __init__(self):
         self.angle_alpha_factor = 1.2
-        self.velocity = 0.55
+        self.velocity = 0.50
         self.omega_max = 1.1
         self.collisionR = 0.4
 
@@ -628,14 +628,14 @@ class MultiVehicleCollision_P_Real(Dynamics):
                 0, 0, 
                 0, 0,
                 0, 0, 0, 
-                0 # TODO: figure out what this does
+                0
             ],
             state_var=[
-                3, 3,
-                3, 3,
-                3, 3,
+                1, 1,
+                1, 1,
+                1, 1,
                 self.angle_alpha_factor*math.pi, self.angle_alpha_factor*math.pi, self.angle_alpha_factor*math.pi,
-                1 # TODO
+                1
             ],
             value_mean=0.25,
             value_var=0.5,
@@ -645,9 +645,9 @@ class MultiVehicleCollision_P_Real(Dynamics):
 
     def state_test_range(self):
         return [
-            [-2, 2], [-2, 2],
-            [-2, 2], [-2, 2],
-            [-2, 2], [-2, 2],
+            [-1, 1], [-1, 1],
+            [-1, 1], [-1, 1],
+            [-1, 1], [-1, 1],
             [-math.pi, math.pi], [-math.pi, math.pi], [-math.pi, math.pi],  
             [0, 1] # Original
         ]

@@ -135,3 +135,4 @@ wandb
 runs
 vis/*
 !vis/high_statistics.py
+!vis/boundary_initials5000.npy

@@ -22,12 +22,10 @@ dynamics = MultiVehicleCollision_P()
 
 # load initial states
 # target_row = np.array([0.0080, -0.5999, 0.5293, -0.2825, -0.4753, -0.3662, 1.5841, 2.6514, 0.6565])
-# initial_states = torch.tensor(np.load("./initial_states/initial_states_all_10000.npy"))[:, :-1].unsqueeze(1)
-# initial_states = torch.tensor(np.load("./initial_states/initial_states.npy"))[:, :-1].unsqueeze(1)
-# initial_states = torch.tensor(np.load("./initial_states/initial_states_all_500.npy"))[:, :-1].unsqueeze(1)
 # initial_states = torch.tensor(np.load("../runs/mvc_t1_g1/plots/initial_conditions.npy"))[:, :-1].unsqueeze(1)
-initial_states = torch.tensor(np.load("./initial_states/initial_states_5000.npy"))[:, :-1].unsqueeze(1)
+# initial_states = torch.tensor(np.load("./initial_states/initial_states_5000.npy"))[:, :-1].unsqueeze(1)
 # initial_states = torch.tensor(np.load("./initial_states/initial_conditions_2.npy"))[:, :-1].unsqueeze(1)
+initial_states = torch.tensor(np.load("boundary_initials5000.npy"))[:, :-1].unsqueeze(1)
 
 print(initial_states[0])
 # quit()
@@ -89,7 +87,14 @@ def trajectory_rollout(policy, dynamics, tMin, tMax, dt, scenario_batch_size, in
         traj_policy_results = policy({'coords': dynamics.coord_to_input(traj_coords.cuda())})  # learned costate/gradient
         traj_dvs = dynamics.io_to_dv(traj_policy_results['model_in'], traj_policy_results['model_out'].squeeze(dim=-1)).detach() # dvdt
 
+        print(traj_dvs.shape)
+
         ctrl_trajs[:, k] = dynamics.optimal_control(traj_coords[:, 1:].cuda(), traj_dvs[..., 1:].cuda()) # optimal control
+
+        # pass into QP
+
+
+        print(ctrl_trajs.shape); quit()
 
 
         state_trajs[:, k+1] = dynamics.equivalent_wrapped_state(
